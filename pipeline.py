@@ -2,29 +2,27 @@ import argparse
 import os
 from utils.lib_pipe import start_pipeline
 
-# Import all necessary modules
-
-from dataset_retrievers.example_retrievers import load_example_wine
-from preprocessors.example_processors import example_wine_preprocessor
-from architectures.example_architectures import ExampleArchitecture
-from trainers.example_trainers import ExampleTrainer
+from dataset_retrievers.spectrogram_retriever import load_belonging_spectrograms
+from preprocessors.spectrogram_processor import spectrogram_preprocessor
+from architectures.belonging_architecture import BelongingCNN
+from trainers.belonging_trainer import BelongingTrainer
 
 #MAPS from string names to classes
 #maps from data retrieval/generation name to function
 DATA_MAP = {
-     "load_example_wine": load_example_wine
+     "load_belonging_spectrograms": load_belonging_spectrograms
 }
 # Maps from preprocessor name to preprocessor function
 PREPROCESSOR_MAP = {
-    "example_wine_preprocessor": example_wine_preprocessor
+    "spectrogram_preprocessor": spectrogram_preprocessor
 }
 # Maps from model name to model class
 MODEL_MAP = {
-    "ExampleArchitecture": ExampleArchitecture
+    "BelongingCNN": BelongingCNN,
 }
 # maps from trainer name to trainer class
 TRAINER_MAP = {
-    "ExampleTrainer": ExampleTrainer
+    "BelongingTrainer": BelongingTrainer
 }
 
 
