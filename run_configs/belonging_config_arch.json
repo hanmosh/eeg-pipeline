@@ -1,0 +1,32 @@
+{
+    "id": "belonging_prediction_arch_tests_new_data",
+    "grid_keys": ["model_params.conv1_filters", "model_params.conv2_filters", "model_params.fc_hidden_size"],
+    "log_filename": "belonging_results.csv",
+    "dataset_params": {
+        "name": "load_belonging_spectrograms",
+        "spectrograms_dir": "scalogram-data-3/128x128",
+        "labels_csv": "GT1_labels.csv",
+        "channels": ["TP9", "AF7", "AF8", "TP10"]
+    },
+    "preprocessor_params": {
+        "name": "spectrogram_preprocessor",
+        "test_split": 0.2,
+        "val_split": 0.2,
+        "batch_size": 8,
+        "split_by_person": true
+    },
+    "model_params": {
+        "name": "BelongingCNN",
+        "dropout_rate": 0.3,
+        "conv1_filters": [8, 16],
+        "conv2_filters": [16, 32],
+        "fc_hidden_size": [32, 64]
+    },
+    "trainer_params": {
+        "name": "BelongingTrainer",
+        "num_epochs": 100,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "patience": 15
+    }
+}

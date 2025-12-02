@@ -91,6 +91,16 @@ def load_belonging_spectrograms(dataset_params, metadata):
         raise RuntimeError("No spectrogram images found matching labels")
     
     print(f"Loaded {len(image_paths)} spectrogram images from {len(set(person_ids))} people")
+
+    #get sub-directory name for identifying image size
+    sub_dir_name = os.path.basename(spectrograms_dir)
+    
+    if sub_dir_name == '64x64':
+        image_size = (64, 64)
+    elif sub_dir_name == '128x128':
+        image_size = (128, 128)
+    else:
+        raise ValueError(f"Unknown image size directory: {sub_dir_name}")
     
     # Update metadata
     metadata.update({
@@ -98,7 +108,7 @@ def load_belonging_spectrograms(dataset_params, metadata):
         "num_people": len(set(person_ids)),
         "channels": channels,
         "num_channels": len(channels),
-        "image_size": (64, 64),
+        "image_size": image_size,
         "num_classes": len(set(labels))
     })
     
