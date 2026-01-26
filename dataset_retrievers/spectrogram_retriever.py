@@ -105,9 +105,9 @@ def load_belonging_spectrograms(dataset_params, metadata):
     #get sub-directory name for identifying image size
     sub_dir_name = os.path.basename(spectrograms_dir)
     
-    if sub_dir_name == '64x64':
+    if sub_dir_name == '64x64' or sub_dir_name == '64':
         image_size = (64, 64)
-    elif sub_dir_name == '128x128':
+    elif sub_dir_name == '128x128' or sub_dir_name == '128':
         image_size = (128, 128)
     else:
         raise ValueError(f"Unknown image size directory: {sub_dir_name}")
