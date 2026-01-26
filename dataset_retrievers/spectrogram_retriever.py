@@ -26,6 +26,9 @@ def load_belonging_spectrograms(dataset_params, metadata):
     spectrograms_dir = dataset_params.get('spectrograms_dir', '../scalogram-data/64x64')
     labels_csv = dataset_params.get('labels_csv', 'GT1_labels.csv')
     channels = dataset_params.get('channels', ['TP9', 'AF7', 'AF8', 'TP10'])
+    allowed_ids = dataset_params.get('ten_percent_ids', None)
+    if allowed_ids is None:
+        allowed_ids = dataset_params.get('ten_percent_ids', None)
     
     logger.log('spectrograms_dir', spectrograms_dir)
     logger.log('labels_csv', labels_csv)
@@ -60,6 +63,13 @@ def load_belonging_spectrograms(dataset_params, metadata):
     
     person_folders = [f for f in os.listdir(spectrograms_dir) 
                      if os.path.isdir(os.path.join(spectrograms_dir, f))]
+
+    if allowed_ids is not None:
+        allowed_ids_set = {str(pid) for pid in allowed_ids}
+        if not allowed_ids_set:
+            raise ValueError("allowed_ids is provided but empty")
+        person_folders = [pid for pid in person_folders if pid in allowed_ids_set]
+        logger.log('allowed_ids_count', len(allowed_ids_set))
     
     print(f"Found {len(person_folders)} person folders")
     

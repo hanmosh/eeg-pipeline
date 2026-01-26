@@ -6,7 +6,29 @@
         "name": "load_belonging_spectrograms",
         "spectrograms_dir": "scalogram-data-3/128x128",
         "labels_csv": "GT1_labels.csv",
-        "channels": ["TP9", "AF7", "AF8", "TP10"]
+        "channels": ["TP9", "AF7", "AF8", "TP10"],
+        "ten_percent_ids": [
+            "67ca18db8ec09603053673b2",
+            "67d0a983ecca3a423861ccbd",
+            "680ac76059c825dbf7c315de",
+            "67c77b7fbe53b42f18bcb28c",
+            "67c784f0037bc8de9f890e42",
+            "67c26b6a6aed7a8612189b14",
+            "67c26fde6aed7a861218a3cb",
+            "68083b0c332567ffa5217126",
+            "68083ffe332567ffa52178db",
+            "68082c50332567ffa5215d6c",
+            "67c65ae75af132787b58df9a",
+            "681bbf7936acd1482d2e6b31",
+            "68097c08ee2519584c38974c",
+            "67c780778cb8fc5788664976",
+            "67c6543b11c3384f9c86d93f",
+            "67c77b63037bc8de9f8902ca",
+            "681144c8bb134e569280d496",
+            "68082161332567ffa5214e0b",
+            "6808335d332567ffa52165f8",
+            "67c76fcb052cf23d4d3779a0"
+        ]
     },
     "preprocessor_params": {
         "name": "spectrogram_preprocessor",
