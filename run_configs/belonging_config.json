@@ -4,7 +4,7 @@
     "log_filename": "belonging_results.csv",
     "dataset_params": {
         "name": "load_belonging_spectrograms",
-        "spectrograms_dir": "scalogram-data-3/128x128",
+        "spectrograms_dir": "/content/scalogram-data-5/128",
         "labels_csv": "GT1_labels.csv",
         "channels": ["TP9", "AF7", "AF8", "TP10"],
         "ten_percent_ids": [
