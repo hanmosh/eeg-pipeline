@@ -135,45 +135,54 @@ def start_pipeline(config_file, data_map, preprocessor_map, model_map, trainer_m
         # Using a dictionary to allow for multiple data splits or loaders (e.g. having seperate test/train/val sets or loaders)
         data, metadata = preprocessor_map[preprocessor_name](preprocessor_params, X, y, metadata)
 
-        # Model instantiation
-        # model_name already retrieved above
-        
-        # model:
-        # params: model params from config, metadata (if needed, such as input shape)
-        # returns: instantiated model
-        model = model_map[model_name](model_params, metadata)
+        if isinstance(data, list):
+            fold_data_list = data
+        else:
+            fold_data_list = [data]
 
-        #set the model in the model tracker
-        model_tracker.set_model(model)
+        for fold_idx, fold_data in enumerate(fold_data_list, start=1):
+            if len(fold_data_list) > 1:
+                logger.log('cv_fold', fold_idx)
+                logger.log('cv_folds', len(fold_data_list))
 
-        # Trainer instantiation and training
-        trainer_name = trainer_params.get("name", None)
-        if trainer_name is None or trainer_name not in trainer_map:
-            raise ValueError(f"Trainer '{trainer_name}' not found in trainer_map.")
-        
-        # trainer:
-        # params: trainer params from config, model, data (dictionary from preprocessor), metadata
-        # NOTE: trainer should also handle validation procedure (along with dataloader if needed)
-        trainer = trainer_map[trainer_name](trainer_params, model, data, metadata)
+            # Model instantiation
+            # model_name already retrieved above
+            
+            # model:
+            # params: model params from config, metadata (if needed, such as input shape)
+            # returns: instantiated model
+            model = model_map[model_name](model_params, metadata)
 
-        # trainer.train():
-        # returns: trained model
-        trained_model = trainer.run()
+            #set the model in the model tracker
+            model_tracker.set_model(model)
+
+            # Trainer instantiation and training
+            trainer_name = trainer_params.get("name", None)
+            if trainer_name is None or trainer_name not in trainer_map:
+                raise ValueError(f"Trainer '{trainer_name}' not found in trainer_map.")
+            
+            # trainer:
+            # params: trainer params from config, model, data (dictionary from preprocessor), metadata
+            # NOTE: trainer should also handle validation procedure (along with dataloader if needed)
+            trainer = trainer_map[trainer_name](trainer_params, model, fold_data, metadata)
+
+            # trainer.train():
+            # returns: trained model
+            trained_model = trainer.run()
+
+            # Finalize logging and save results
+            model_tracker.set_model(trained_model)
+            if save_model:
+                logger.log('model_save_path', model_tracker.get_model_info_save_path())
+                model_tracker.save_model_details()
+            else:
+                model_tracker.reset_tracker()
+
+            # Save and reset logger for next run
+            logger_filename = config_copy.get("log_filename", "default_log.csv")
+            logger.save(logger_filename)
 
         total_combos -= 1
-
-        # Finalize logging and save results
-        model_tracker.set_model(trained_model)
-        if save_model:
-            logger.log('model_save_path', model_tracker.get_model_info_save_path())
-            model_tracker.save_model_details()
-        else:
-            model_tracker.reset_tracker()
-
-
-        # Save and reset logger for next run
-        logger_filename = config_copy.get("log_filename", "default_log.csv")
-        logger.save(logger_filename)
 
 
         

@@ -43,7 +43,13 @@ class BelongingTrainer:
         weight_decay = self.trainer_params.get('weight_decay', 1e-4)
         patience = self.trainer_params.get('patience', 10)
         
-        criterion = nn.CrossEntropyLoss()
+        train_labels = np.array(self.data['train_loader'].dataset.labels, dtype=int)
+        class_counts = np.bincount(train_labels)
+        class_counts = np.where(class_counts == 0, 1, class_counts)
+        class_weights = class_counts.sum() / (len(class_counts) * class_counts)
+        criterion = nn.CrossEntropyLoss(
+            weight=torch.tensor(class_weights, dtype=torch.float32, device=self.device)
+        )
         optimizer = optim.Adam(
             self.model.parameters(),
             lr=learning_rate,

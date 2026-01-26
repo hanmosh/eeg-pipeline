@@ -2,7 +2,7 @@ import os
 import numpy as np
 import pandas as pd
 from PIL import Image
-from sklearn.model_selection import train_test_split, GroupShuffleSplit
+from sklearn.model_selection import train_test_split, GroupShuffleSplit, StratifiedKFold
 from collections import Counter
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -127,6 +127,7 @@ def spectrogram_preprocessor(preprocessor_params, X, y, metadata):
     val_split = preprocessor_params.get('val_split', 0.2)
     batch_size = preprocessor_params.get('batch_size', 16)
     split_by_person = preprocessor_params.get('split_by_person', True)
+    cv_folds = preprocessor_params.get('cv_folds', 0)
     channels = metadata.get('channels', ['TP9', 'AF7', 'AF8', 'TP10'])
     
     image_paths = X['images']
@@ -152,6 +153,61 @@ def spectrogram_preprocessor(preprocessor_params, X, y, metadata):
     # Split data
     unique_person_ids = np.array(list(set(group_person_ids)))
     unique_labels = np.array([person_to_label[pid] for pid in unique_person_ids])
+
+    if cv_folds and cv_folds > 1:
+        if cv_folds > len(unique_person_ids):
+            raise ValueError("cv_folds cannot exceed number of unique people")
+        skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+        fold_data = []
+        for fold_idx, (train_person_idx, val_person_idx) in enumerate(
+            skf.split(unique_person_ids, unique_labels), start=1
+        ):
+            train_persons = unique_person_ids[train_person_idx]
+            val_persons = unique_person_ids[val_person_idx]
+
+            train_idx = [i for i, pid in enumerate(group_person_ids) if pid in train_persons]
+            val_idx = [i for i, pid in enumerate(group_person_ids) if pid in val_persons]
+
+            train_groups = [image_groups[i] for i in train_idx]
+            train_labels = group_labels[train_idx]
+
+            val_groups = [image_groups[i] for i in val_idx]
+            val_labels = group_labels[val_idx]
+
+            print(
+                f"Fold {fold_idx}/{cv_folds}: "
+                f"Train {len(train_groups)} windows, Val {len(val_groups)} windows"
+            )
+
+            train_dataset = SpectrogramDataset(train_groups, train_labels, channels=channels)
+            val_dataset = SpectrogramDataset(val_groups, val_labels, channels=channels)
+
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=0
+            )
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=0
+            )
+
+            fold_data.append({
+                'train_loader': train_loader,
+                'val_loader': val_loader,
+                'test_loader': None,
+                'cv_fold': fold_idx
+            })
+
+        metadata.update({
+            'cv_folds': cv_folds,
+            'batch_size': batch_size
+        })
+
+        return fold_data, metadata
     
     # First split: train+val vs test
     if test_split > 0:
