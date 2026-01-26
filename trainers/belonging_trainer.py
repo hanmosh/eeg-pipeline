@@ -50,9 +50,14 @@ class BelongingTrainer:
             weight_decay=weight_decay
         )
         
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=5, verbose=True
-        )
+        try:
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', factor=0.5, patience=5, verbose=True
+            )
+        except TypeError:
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', factor=0.5, patience=5
+            )
         
         train_loader = self.data['train_loader']
         val_loader = self.data['val_loader']
