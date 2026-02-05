@@ -6,7 +6,8 @@
         "name": "load_belonging_spectrograms",
         "spectrograms_dir": "scalogram-data-3/128x128",
         "labels_csv": "GT1_labels.csv",
-        "channels": ["TP9", "AF7", "AF8", "TP10"]
+        "channels": ["TP9", "AF7", "AF8", "TP10"],
+        "use_ten_percent_ids": false
     },
     "preprocessor_params": {
         "name": "spectrogram_preprocessor",

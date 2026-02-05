@@ -27,11 +27,13 @@ def load_belonging_spectrograms(dataset_params, metadata):
     labels_csv = dataset_params.get('labels_csv', 'GT1_labels.csv')
     channels = dataset_params.get('channels', ['TP9', 'AF7', 'AF8', 'TP10'])
     allowed_ids = dataset_params.get('ten_percent_ids', None)
-    if allowed_ids is None:
-        allowed_ids = dataset_params.get('ten_percent_ids', None)
+    use_ten_percent_ids = dataset_params.get('use_ten_percent_ids', allowed_ids is not None)
+    if not use_ten_percent_ids:
+        allowed_ids = None
     
     logger.log('spectrograms_dir', spectrograms_dir)
     logger.log('labels_csv', labels_csv)
+    logger.log('use_ten_percent_ids', bool(use_ten_percent_ids))
     
     # Load labels
     if not os.path.exists(labels_csv):
