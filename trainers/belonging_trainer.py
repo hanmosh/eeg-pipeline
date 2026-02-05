@@ -3,6 +3,7 @@ from torch import nn, optim
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score, confusion_matrix
 import numpy as np
+import copy
 from utils.log import logger, model_tracker
 
 
@@ -34,6 +35,18 @@ class BelongingTrainer:
                 model_tracker.plot_metric("val_auc")
         
         return trained_model
+
+    def _forward_person_batch(self, inputs):
+        if isinstance(inputs, (list, tuple)):
+            outputs = []
+            for windows in inputs:
+                outputs.append(self.model.forward_person(windows))
+            return torch.cat(outputs, dim=0)
+
+        inputs = inputs.to(self.device)
+        if hasattr(self.model, "forward_person") and inputs.dim() in (4, 5):
+            return self.model.forward_person(inputs)
+        return self.model(inputs)
     
     def train(self):
         logger.log_dict(self.trainer_params)
@@ -81,10 +94,10 @@ class BelongingTrainer:
             train_probs = []
             
             for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]"):
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
+                labels = labels.to(self.device)
                 
                 optimizer.zero_grad()
-                outputs = self.model(inputs)
+                outputs = self._forward_person_batch(inputs)
                 loss = criterion(outputs, labels)
                 
                 loss.backward()
@@ -125,7 +138,7 @@ class BelongingTrainer:
                 # Early stopping check
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    best_model_state = self.model.state_dict().copy()
+                    best_model_state = copy.deepcopy(self.model.state_dict())
                     epochs_without_improvement = 0
                 else:
                     epochs_without_improvement += 1
@@ -165,8 +178,8 @@ class BelongingTrainer:
         
         with torch.no_grad():
             for inputs, labels in val_loader:
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
-                outputs = self.model(inputs)
+                labels = labels.to(self.device)
+                outputs = self._forward_person_batch(inputs)
                 loss = criterion(outputs, labels)
                 
                 val_losses.append(loss.item())
@@ -198,8 +211,8 @@ class BelongingTrainer:
         
         with torch.no_grad():
             for inputs, labels in test_loader:
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
-                outputs = self.model(inputs)
+                labels = labels.to(self.device)
+                outputs = self._forward_person_batch(inputs)
                 
                 probs = torch.softmax(outputs, dim=1)
                 preds = torch.argmax(outputs, dim=1)

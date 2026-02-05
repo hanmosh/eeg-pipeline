@@ -12,15 +12,19 @@
         "name": "spectrogram_preprocessor",
         "test_split": 0.2,
         "val_split": 0.2,
-        "batch_size": 8,
-        "split_by_person": true
+        "batch_size": 1,
+        "force_single_person_batch": true,
+        "split_by_person": true,
+        "downsample_train": true,
+        "max_windows_per_person": 1000
     },
     "model_params": {
         "name": "BelongingCNN",
         "dropout_rate": 0.3,
         "conv1_filters": [8, 16],
         "conv2_filters": [16, 32],
-        "fc_hidden_size": [32, 64]
+        "fc_hidden_size": [32, 64],
+        "window_chunk_size": 256
     },
     "trainer_params": {
         "name": "BelongingTrainer",
