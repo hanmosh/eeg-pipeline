@@ -25,6 +25,7 @@ def load_belonging_spectrograms(dataset_params, metadata):
     
     spectrograms_dir = dataset_params.get('spectrograms_dir', '../scalogram-data/64x64')
     labels_csv = dataset_params.get('labels_csv', 'GT1_labels.csv')
+    label_col_param = dataset_params.get('label_col', 'GT1')
     channels = dataset_params.get('channels', ['TP9', 'AF7', 'AF8', 'TP10'])
     allowed_ids = dataset_params.get('ten_percent_ids', None)
     use_ten_percent_ids = dataset_params.get('use_ten_percent_ids', allowed_ids is not None)
@@ -47,10 +48,10 @@ def load_belonging_spectrograms(dataset_params, metadata):
     else:
         raise ValueError("Labels CSV must have 'student_id' column")
     
-    if 'GT1' in labels_df.columns:
-        label_col = 'GT1'
+    if label_col_param in labels_df.columns:
+        label_col = label_col_param
     else:
-        raise ValueError("Labels CSV must have 'GT1' column")
+        raise ValueError(f"Labels CSV must have '{label_col_param}' column")
     
     labels_df[id_col] = labels_df[id_col].astype(str)
     labels_map = dict(zip(labels_df[id_col], labels_df[label_col]))

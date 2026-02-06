@@ -5,7 +5,8 @@
     "dataset_params": {
         "name": "load_belonging_spectrograms",
         "spectrograms_dir": "scalogram-data-3/128x128",
-        "labels_csv": "GT1_labels.csv",
+        "labels_csv": "WeightedLabels.csv",
+        "label_col": "WeightedDiffLabel",
         "channels": ["TP9", "AF7", "AF8", "TP10"],
         "use_ten_percent_ids": false
     },
