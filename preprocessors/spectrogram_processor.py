@@ -247,6 +247,8 @@ def spectrogram_preprocessor(preprocessor_params, X, y, metadata):
     # Split data
     unique_person_ids = np.array(list(person_to_groups.keys()))
     unique_labels = np.array([person_to_label[str(pid)] for pid in unique_person_ids])
+    class_counts = Counter(unique_labels)
+    num_classes = len(class_counts)
 
     def resolve_max_windows(person_ids):
         if not downsample_train:
@@ -329,6 +331,53 @@ def spectrogram_preprocessor(preprocessor_params, X, y, metadata):
 
         return fold_data, metadata
     
+    # Validate stratified split feasibility (at least one per class in each split)
+    def _split_size(n, split):
+        if split <= 0:
+            return 0
+        return int(np.ceil(n * split))
+
+    def _validate_stratified_splits(n_total, test_split, val_split, num_classes, class_counts):
+        if num_classes <= 1:
+            return
+
+        n_test = _split_size(n_total, test_split)
+        n_train_val = n_total - n_test
+        n_val = _split_size(n_train_val, val_split) if n_train_val > 0 else 0
+        n_train = n_total - n_test - n_val
+
+        if n_test > 0 and n_test < num_classes:
+            raise ValueError(
+                f"test_split too small for stratified split: n_test={n_test}, num_classes={num_classes}. "
+                f"Increase test_split or reduce number of classes."
+            )
+        if n_val > 0 and n_val < num_classes:
+            raise ValueError(
+                f"val_split too small for stratified split: n_val={n_val}, num_classes={num_classes}. "
+                f"Increase val_split or reduce number of classes."
+            )
+        if n_train < num_classes:
+            raise ValueError(
+                f"Not enough training samples for stratified split: n_train={n_train}, num_classes={num_classes}. "
+                f"Reduce test/val splits or reduce number of classes."
+            )
+
+        min_count = min(class_counts.values()) if class_counts else 0
+        if test_split > 0 and val_split > 0 and min_count < 3:
+            raise ValueError(
+                f"Each class needs at least 3 people for train/val/test. "
+                f"Smallest class has {min_count}."
+            )
+        if (test_split > 0) != (val_split > 0) and min_count < 2:
+            raise ValueError(
+                f"Each class needs at least 2 people for train+test or train+val. "
+                f"Smallest class has {min_count}."
+            )
+
+    _validate_stratified_splits(
+        len(unique_person_ids), test_split, val_split, num_classes, class_counts
+    )
+
     # First split: train+val vs test
     if test_split > 0:
         train_val_persons, test_persons = train_test_split(
