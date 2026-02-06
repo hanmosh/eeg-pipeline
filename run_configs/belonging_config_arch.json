@@ -14,8 +14,8 @@
         "name": "spectrogram_preprocessor",
         "test_split": 0.2,
         "val_split": 0.2,
-        "batch_size": 1,
-        "force_single_person_batch": true,
+        "batch_size": 3,
+        "force_single_person_batch": false,
         "split_by_person": true,
         "downsample_train": true,
         "max_windows_per_person": 1000
