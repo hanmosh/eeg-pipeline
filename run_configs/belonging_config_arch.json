@@ -8,7 +8,7 @@
         "labels_csv": "WeightedLabels.csv",
         "label_col": "WeightedDiffLabel",
         "channels": ["TP9", "AF7", "AF8", "TP10"],
-        "use_ten_percent_ids": true,
+        "use_ten_percent_ids": false,
         "ten_percent_ids": [
             "67ca18db8ec09603053673b2",
             "67d0a983ecca3a423861ccbd",
