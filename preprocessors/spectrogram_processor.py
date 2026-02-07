@@ -418,6 +418,16 @@ def spectrogram_preprocessor(preprocessor_params, X, y, metadata):
         f"Val: {len(val_persons)} people ({val_windows} windows), "
         f"Test: {len(test_persons)} people ({test_windows} windows)"
     )
+    print_person_ids = preprocessor_params.get('print_person_ids', False)
+    if print_person_ids:
+        def _format_person_labels(person_ids):
+            pairs = [(str(pid), int(person_to_label[str(pid)])) for pid in person_ids]
+            pairs.sort(key=lambda x: x[0])
+            return ", ".join(f"{pid}:{label}" for pid, label in pairs)
+
+        print(f"Train IDs (id:label): {_format_person_labels(train_persons)}")
+        print(f"Val IDs (id:label): {_format_person_labels(val_persons)}")
+        print(f"Test IDs (id:label): {_format_person_labels(test_persons)}")
 
     # Create datasets
     train_dataset = SpectrogramPersonDataset(
