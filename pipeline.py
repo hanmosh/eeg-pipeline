@@ -5,6 +5,7 @@ from utils.lib_pipe import start_pipeline
 from dataset_retrievers.spectrogram_retriever import load_belonging_spectrograms
 from preprocessors.spectrogram_processor import spectrogram_preprocessor
 from architectures.belonging_architecture import BelongingCNN
+from architectures.chrononet import ChronoNet
 from trainers.belonging_trainer import BelongingTrainer
 
 #MAPS from string names to classes
@@ -19,6 +20,7 @@ PREPROCESSOR_MAP = {
 # Maps from model name to model class
 MODEL_MAP = {
     "BelongingCNN": BelongingCNN,
+    "ChronoNet": ChronoNet,
 }
 # maps from trainer name to trainer class
 TRAINER_MAP = {
