@@ -13,12 +13,36 @@ class BelongingTrainer:
         self.model = model
         self.data = data
         self.metadata = metadata
+        self.print_prob_diagnostics = self.trainer_params.get('print_prob_diagnostics', True)
         
         # set device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
         
         print(f"Using device: {self.device}")
+
+    def _log_prob_diagnostics(self, split_name, probs, labels, include_confusion=True):
+        if not self.print_prob_diagnostics:
+            return
+        if len(probs) == 0:
+            print(f"{split_name.capitalize()} Diagnostics: no samples")
+            return
+        probs = np.array(probs, dtype=float)
+        labels = np.array(labels, dtype=int)
+        mean_prob = float(np.mean(probs))
+        min_prob = float(np.min(probs))
+        max_prob = float(np.max(probs))
+        pct_over = float(np.mean(probs > 0.5) * 100.0)
+        preds = (probs > 0.5).astype(int)
+        print(
+            f"{split_name.capitalize()} Diagnostics: "
+            f"prob(min/mean/max)={min_prob:.4f}/{mean_prob:.4f}/{max_prob:.4f}, "
+            f">%0.5={pct_over:.1f}%"
+        )
+        if include_confusion:
+            cm = confusion_matrix(labels, preds)
+            print(f"{split_name.capitalize()} Confusion Matrix (threshold=0.5):")
+            print(cm)
         
     def run(self):
         trained_model = self.train()
@@ -124,6 +148,7 @@ class BelongingTrainer:
             model_tracker.track_metric('train_loss', avg_train_loss)
             model_tracker.track_metric('train_accuracy', train_accuracy)
             model_tracker.track_metric('train_auc', train_auc)
+
             
             # Validation
             if val_loader is not None:
@@ -199,6 +224,8 @@ class BelongingTrainer:
             val_auc = roc_auc_score(val_labels, val_probs)
         else:
             val_auc = 0.0
+
+        self._log_prob_diagnostics('val', val_probs, val_labels, include_confusion=True)
         
         return avg_val_loss, val_accuracy, val_auc
     
@@ -235,6 +262,8 @@ class BelongingTrainer:
         
         # Confusion matrix
         cm = confusion_matrix(test_labels, test_preds)
+
+        self._log_prob_diagnostics(split_name, test_probs, test_labels, include_confusion=False)
         
         logger.log(f'{split_name}_accuracy', accuracy)
         logger.log(f'{split_name}_precision', precision)
