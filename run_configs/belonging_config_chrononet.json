@@ -18,7 +18,8 @@
         "force_single_person_batch": true,
         "split_by_person": true,
         "downsample_train": true,
-        "max_windows_per_person": 1000
+        "max_windows_per_person": 1000,
+        "print_person_ids": true
     },
     "model_params": {
         "name": "ChronoNet",
