@@ -11,7 +11,7 @@
         "test_split": 0.0,
         "val_split": 0.0,
         "batch_size": 1,
-        "cv_folds": 5,
+        "cv_folds": 3,
         "downsample_train": true,
         "max_windows_per_person": 1000
     },

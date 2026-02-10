@@ -90,6 +90,9 @@ class BelongingTrainer:
         trained_model = self.train()
         if self.data['test_loader'] is not None:
             self.evaluate(self.data['test_loader'], split_name='test')
+        elif self.data['val_loader'] is not None:
+            # For CV runs (no held-out test), report validation confusion matrix.
+            self.evaluate(self.data['val_loader'], split_name='val')
 
         if model_tracker.save_model:
             model_tracker.plot_metrics(["train_loss", "val_loss"])
