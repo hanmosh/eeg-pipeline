@@ -45,6 +45,18 @@ class BelongingTrainer:
         preds = torch.argmax(logits, dim=1)
         return loss, preds, probs, labels_use
 
+    def _compute_prf(self, labels, preds):
+        labels_arr = np.array(labels, dtype=int)
+        preds_arr = np.array(preds, dtype=int)
+        if labels_arr.size == 0:
+            return 0.0, 0.0, 0.0, 'binary'
+        unique_labels = np.unique(labels_arr)
+        average = 'binary' if len(unique_labels) == 2 else 'macro'
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            labels_arr, preds_arr, average=average, zero_division=0
+        )
+        return precision, recall, f1, average
+
     def _plot_roc_curve(self, labels, probs, split_name='test'):
         if not model_tracker.save_model:
             print("Model saving not enabled. Skipping ROC curve plot.")
@@ -148,14 +160,25 @@ class BelongingTrainer:
 
             avg_train_loss = np.mean(train_losses)
             train_accuracy = accuracy_score(train_labels, train_preds)
+            train_precision, train_recall, train_f1, train_avg = self._compute_prf(
+                train_labels, train_preds
+            )
 
             model_tracker.track_metric('train_loss', avg_train_loss)
             model_tracker.track_metric('train_accuracy', train_accuracy)
+            model_tracker.track_metric('train_precision', train_precision)
+            model_tracker.track_metric('train_recall', train_recall)
+            model_tracker.track_metric('train_f1', train_f1)
 
             if val_loader is not None:
-                val_loss, val_accuracy = self.validate(val_loader, criterion)
+                val_loss, val_accuracy, val_precision, val_recall, val_f1, val_avg = self.validate(
+                    val_loader, criterion
+                )
                 model_tracker.track_metric('val_loss', val_loss)
                 model_tracker.track_metric('val_accuracy', val_accuracy)
+                model_tracker.track_metric('val_precision', val_precision)
+                model_tracker.track_metric('val_recall', val_recall)
+                model_tracker.track_metric('val_f1', val_f1)
                 scheduler.step(val_loss)
 
                 if val_loss < best_val_loss:
@@ -167,8 +190,10 @@ class BelongingTrainer:
 
                 print(
                     f"Epoch {epoch+1}/{num_epochs}: "
-                    f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f} | "
-                    f"Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.4f}"
+                    f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f}, "
+                    f"Train P/R/F1 ({train_avg}): {train_precision:.4f}/{train_recall:.4f}/{train_f1:.4f} | "
+                    f"Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.4f}, "
+                    f"Val P/R/F1 ({val_avg}): {val_precision:.4f}/{val_recall:.4f}/{val_f1:.4f}"
                 )
 
                 if epochs_without_improvement >= patience:
@@ -177,7 +202,8 @@ class BelongingTrainer:
             else:
                 print(
                     f"Epoch {epoch+1}/{num_epochs}: "
-                    f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f}"
+                    f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f}, "
+                    f"Train P/R/F1 ({train_avg}): {train_precision:.4f}/{train_recall:.4f}/{train_f1:.4f}"
                 )
 
         if best_model_state is not None:
@@ -212,7 +238,8 @@ class BelongingTrainer:
 
         avg_val_loss = np.mean(val_losses)
         val_accuracy = accuracy_score(val_labels, val_preds)
-        return avg_val_loss, val_accuracy
+        val_precision, val_recall, val_f1, val_avg = self._compute_prf(val_labels, val_preds)
+        return avg_val_loss, val_accuracy, val_precision, val_recall, val_f1, val_avg
 
     def evaluate(self, test_loader, split_name='test'):
         self.model.eval()
