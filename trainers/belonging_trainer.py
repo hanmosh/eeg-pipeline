@@ -1,9 +1,12 @@
+import copy
+
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from torch import nn, optim
 from tqdm import tqdm
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score, confusion_matrix
-import numpy as np
-import copy
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_curve, confusion_matrix
+
 from utils.log import logger, model_tracker
 
 
@@ -13,86 +16,97 @@ class BelongingTrainer:
         self.model = model
         self.data = data
         self.metadata = metadata
-        self.print_prob_diagnostics = self.trainer_params.get('print_prob_diagnostics', True)
-        
-        # set device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
-        
         print(f"Using device: {self.device}")
 
-    def _log_prob_diagnostics(self, split_name, probs, labels, include_confusion=True):
-        if not self.print_prob_diagnostics:
+    def _compute_loss_and_stats(self, outputs, labels, lengths, criterion):
+        if outputs.dim() == 3:
+            batch_size, seq_len, num_classes = outputs.shape
+            logits = outputs.view(batch_size * seq_len, num_classes)
+            labels_flat = labels.view(batch_size * seq_len)
+            if lengths is not None:
+                mask = (torch.arange(seq_len, device=labels.device)
+                        .unsqueeze(0) < lengths.unsqueeze(1))
+                mask_flat = mask.view(-1)
+                loss_vec = criterion(logits, labels_flat)
+                loss = loss_vec[mask_flat].mean()
+                logits = logits[mask_flat]
+                labels_use = labels_flat[mask_flat]
+            else:
+                loss = criterion(logits, labels_flat).mean()
+                labels_use = labels_flat
+        else:
+            loss = criterion(outputs, labels).mean()
+            logits = outputs
+            labels_use = labels
+
+        probs = torch.softmax(logits, dim=1)
+        preds = torch.argmax(logits, dim=1)
+        return loss, preds, probs, labels_use
+
+    def _plot_roc_curve(self, labels, probs, split_name='test'):
+        if not model_tracker.save_model:
+            print("Model saving not enabled. Skipping ROC curve plot.")
             return
-        if len(probs) == 0:
-            print(f"{split_name.capitalize()} Diagnostics: no samples")
+        if model_tracker.filepath is None:
+            print("Model filepath not set. Skipping ROC curve plot.")
             return
-        probs = np.array(probs, dtype=float)
+
         labels = np.array(labels, dtype=int)
-        mean_prob = float(np.mean(probs))
-        min_prob = float(np.min(probs))
-        max_prob = float(np.max(probs))
-        pct_over = float(np.mean(probs > 0.5) * 100.0)
-        preds = (probs > 0.5).astype(int)
-        print(
-            f"{split_name.capitalize()} Diagnostics: "
-            f"prob(min/mean/max)={min_prob:.4f}/{mean_prob:.4f}/{max_prob:.4f}, "
-            f">%0.5={pct_over:.1f}%"
-        )
-        if include_confusion:
-            cm = confusion_matrix(labels, preds)
-            print(f"{split_name.capitalize()} Confusion Matrix (threshold=0.5):")
-            print(cm)
-        
+        probs = np.array(probs, dtype=float)
+        if labels.size == 0 or probs.size == 0:
+            print(f"{split_name.capitalize()} ROC Curve: no samples, skipping plot.")
+            return
+        if len(np.unique(labels)) < 2:
+            print(f"{split_name.capitalize()} ROC Curve: only one class present, skipping plot.")
+            return
+
+        fpr, tpr, _ = roc_curve(labels, probs)
+        plt.figure()
+        plt.plot(fpr, tpr, label='ROC')
+        plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Chance')
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title(f'{split_name.capitalize()} ROC Curve')
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(f'{model_tracker.filepath}{split_name}_roc_curve.png')
+        plt.close()
+
     def run(self):
         trained_model = self.train()
-        
         if self.data['test_loader'] is not None:
             self.evaluate(self.data['test_loader'], split_name='test')
-        
-        # Plot metrics
+
         if model_tracker.save_model:
             model_tracker.plot_metrics(["train_loss", "val_loss"])
             model_tracker.plot_metrics(["train_accuracy", "val_accuracy"])
-            model_tracker.plot_metric("train_auc")
-            if self.data['val_loader'] is not None:
-                model_tracker.plot_metric("val_auc")
-        
+
         return trained_model
 
-    def _forward_person_batch(self, inputs):
-        if isinstance(inputs, (list, tuple)):
-            outputs = []
-            for windows in inputs:
-                outputs.append(self.model.forward_person(windows))
-            return torch.cat(outputs, dim=0)
-
-        inputs = inputs.to(self.device)
-        if hasattr(self.model, "forward_person") and inputs.dim() in (4, 5):
-            return self.model.forward_person(inputs)
-        return self.model(inputs)
-    
     def train(self):
         logger.log_dict(self.trainer_params)
-        
+
         num_epochs = self.trainer_params.get('num_epochs', 50)
         learning_rate = self.trainer_params.get('learning_rate', 1e-3)
         weight_decay = self.trainer_params.get('weight_decay', 1e-4)
         patience = self.trainer_params.get('patience', 10)
-        
+
         train_labels = np.array(self.data['train_loader'].dataset.labels, dtype=int)
         class_counts = np.bincount(train_labels)
         class_counts = np.where(class_counts == 0, 1, class_counts)
         class_weights = class_counts.sum() / (len(class_counts) * class_counts)
         criterion = nn.CrossEntropyLoss(
-            weight=torch.tensor(class_weights, dtype=torch.float32, device=self.device)
+            weight=torch.tensor(class_weights, dtype=torch.float32, device=self.device),
+            reduction='none'
         )
         optimizer = optim.Adam(
             self.model.parameters(),
             lr=learning_rate,
             weight_decay=weight_decay
         )
-        
+
         try:
             scheduler = optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, mode='min', factor=0.5, patience=5, verbose=True
@@ -101,183 +115,144 @@ class BelongingTrainer:
             scheduler = optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, mode='min', factor=0.5, patience=5
             )
-        
+
         train_loader = self.data['train_loader']
         val_loader = self.data['val_loader']
-        
+
         best_val_loss = float('inf')
         best_model_state = None
         epochs_without_improvement = 0
-        
-        # Training loop
+
         for epoch in range(num_epochs):
             self.model.train()
             train_losses = []
             train_preds = []
             train_labels = []
-            train_probs = []
-            
-            for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]"):
+
+            for inputs, labels, lengths in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]"):
                 labels = labels.to(self.device)
-                
+                lengths = lengths.to(self.device)
+
                 optimizer.zero_grad()
-                outputs = self._forward_person_batch(inputs)
-                loss = criterion(outputs, labels)
-                
+                outputs = self.model(inputs.to(self.device), lengths=lengths)
+                loss, preds, _probs, labels_use = self._compute_loss_and_stats(
+                    outputs, labels, lengths, criterion
+                )
+
                 loss.backward()
                 optimizer.step()
-                
+
                 train_losses.append(loss.item())
-                
-                probs = torch.softmax(outputs, dim=1)
-                preds = torch.argmax(outputs, dim=1)
-                
-                train_preds.extend(preds.cpu().numpy())
-                train_labels.extend(labels.cpu().numpy())
-                train_probs.extend(probs[:, 1].detach().cpu().numpy())  # Prob of positibe class
-            
+                train_preds.extend(preds.detach().cpu().numpy())
+                train_labels.extend(labels_use.detach().cpu().numpy())
+
             avg_train_loss = np.mean(train_losses)
             train_accuracy = accuracy_score(train_labels, train_preds)
-            
-            # Calculate AUC
-            if len(np.unique(train_labels)) > 1:
-                train_auc = roc_auc_score(train_labels, train_probs)
-            else:
-                train_auc = 0.0
-            
+
             model_tracker.track_metric('train_loss', avg_train_loss)
             model_tracker.track_metric('train_accuracy', train_accuracy)
-            model_tracker.track_metric('train_auc', train_auc)
 
-            
-            # Validation
             if val_loader is not None:
-                val_loss, val_accuracy, val_auc = self.validate(val_loader, criterion)
-                
+                val_loss, val_accuracy = self.validate(val_loader, criterion)
                 model_tracker.track_metric('val_loss', val_loss)
                 model_tracker.track_metric('val_accuracy', val_accuracy)
-                model_tracker.track_metric('val_auc', val_auc)
-                
                 scheduler.step(val_loss)
-                
-                # Early stopping check
+
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     best_model_state = copy.deepcopy(self.model.state_dict())
                     epochs_without_improvement = 0
                 else:
                     epochs_without_improvement += 1
-                
-                print(f"Epoch {epoch+1}/{num_epochs}: "
-                      f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f}, Train AUC: {train_auc:.4f} | "
-                      f"Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.4f}, Val AUC: {val_auc:.4f}")
-                
+
+                print(
+                    f"Epoch {epoch+1}/{num_epochs}: "
+                    f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f} | "
+                    f"Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.4f}"
+                )
+
                 if epochs_without_improvement >= patience:
                     print(f"Early stopping triggered after {epoch+1} epochs")
                     break
             else:
-                print(f"Epoch {epoch+1}/{num_epochs}: "
-                      f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f}, Train AUC: {train_auc:.4f}")
-        
-        # Restore best model
+                print(
+                    f"Epoch {epoch+1}/{num_epochs}: "
+                    f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f}"
+                )
+
         if best_model_state is not None:
             self.model.load_state_dict(best_model_state)
             print("Restored best model from validation")
-        
+
         logger.log('final_train_loss', avg_train_loss)
         logger.log('final_train_accuracy', train_accuracy)
-        logger.log('final_train_auc', train_auc)
-        
         if val_loader is not None:
             logger.log('best_val_loss', best_val_loss)
-        
+
         return self.model
-    
+
     def validate(self, val_loader, criterion):
-        """Validation phase"""
         self.model.eval()
         val_losses = []
         val_preds = []
         val_labels = []
-        val_probs = []
-        
+
         with torch.no_grad():
-            for inputs, labels in val_loader:
+            for inputs, labels, lengths in val_loader:
                 labels = labels.to(self.device)
-                outputs = self._forward_person_batch(inputs)
-                loss = criterion(outputs, labels)
-                
+                lengths = lengths.to(self.device)
+                outputs = self.model(inputs.to(self.device), lengths=lengths)
+                loss, preds, _probs, labels_use = self._compute_loss_and_stats(
+                    outputs, labels, lengths, criterion
+                )
+
                 val_losses.append(loss.item())
-                
-                probs = torch.softmax(outputs, dim=1)
-                preds = torch.argmax(outputs, dim=1)
-                
-                val_preds.extend(preds.cpu().numpy())
-                val_labels.extend(labels.cpu().numpy())
-                val_probs.extend(probs[:, 1].cpu().numpy())
-        
+                val_preds.extend(preds.detach().cpu().numpy())
+                val_labels.extend(labels_use.detach().cpu().numpy())
+
         avg_val_loss = np.mean(val_losses)
         val_accuracy = accuracy_score(val_labels, val_preds)
-        
-        # Calculate AUC
-        if len(np.unique(val_labels)) > 1:
-            val_auc = roc_auc_score(val_labels, val_probs)
-        else:
-            val_auc = 0.0
+        return avg_val_loss, val_accuracy
 
-        self._log_prob_diagnostics('val', val_probs, val_labels, include_confusion=True)
-        
-        return avg_val_loss, val_accuracy, val_auc
-    
     def evaluate(self, test_loader, split_name='test'):
-        """Final evaluation on test set"""
         self.model.eval()
         test_preds = []
         test_labels = []
         test_probs = []
-        
+
         with torch.no_grad():
-            for inputs, labels in test_loader:
+            for inputs, labels, lengths in test_loader:
                 labels = labels.to(self.device)
-                outputs = self._forward_person_batch(inputs)
-                
-                probs = torch.softmax(outputs, dim=1)
-                preds = torch.argmax(outputs, dim=1)
-                
-                test_preds.extend(preds.cpu().numpy())
-                test_labels.extend(labels.cpu().numpy())
-                test_probs.extend(probs[:, 1].cpu().numpy())
-        
-        # Calculate metrics
+                lengths = lengths.to(self.device)
+                outputs = self.model(inputs.to(self.device), lengths=lengths)
+                _loss, preds, probs, labels_use = self._compute_loss_and_stats(
+                    outputs, labels, lengths, nn.CrossEntropyLoss(reduction='none')
+                )
+
+                test_preds.extend(preds.detach().cpu().numpy())
+                test_labels.extend(labels_use.detach().cpu().numpy())
+                test_probs.extend(probs[:, 1].detach().cpu().numpy())
+
         accuracy = accuracy_score(test_labels, test_preds)
         precision, recall, f1, _ = precision_recall_fscore_support(
             test_labels, test_preds, average='binary', zero_division=0
         )
-        
-        # Calculate AUC
-        if len(np.unique(test_labels)) > 1:
-            auc = roc_auc_score(test_labels, test_probs)
-        else:
-            auc = 0.0
-        
-        # Confusion matrix
         cm = confusion_matrix(test_labels, test_preds)
 
-        self._log_prob_diagnostics(split_name, test_probs, test_labels, include_confusion=False)
-        
         logger.log(f'{split_name}_accuracy', accuracy)
         logger.log(f'{split_name}_precision', precision)
         logger.log(f'{split_name}_recall', recall)
         logger.log(f'{split_name}_f1', f1)
-        logger.log(f'{split_name}_auc', auc)
-        
+
         print(f"\n{split_name.capitalize()} Set Results:")
         print(f"Accuracy: {accuracy:.4f}")
         print(f"Precision: {precision:.4f}")
         print(f"Recall: {recall:.4f}")
         print(f"F1 Score: {f1:.4f}")
-        print(f"AUC: {auc:.4f}")
         print(f"\nConfusion Matrix:")
         print(cm)
-        
+
+        if split_name == 'test':
+            self._plot_roc_curve(test_labels, test_probs, split_name=split_name)
+
         return self.model

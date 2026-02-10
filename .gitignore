@@ -2,3 +2,4 @@ models/
 logs/
 
 scalogram-data/
+.venv312/
