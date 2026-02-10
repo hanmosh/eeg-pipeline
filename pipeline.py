@@ -2,15 +2,19 @@ import argparse
 
 from utils.lib_pipe import start_pipeline
 from dataset_retrievers.spectrogram_retriever import load_belonging_spectrograms
+from dataset_retrievers.tfrecord_retriever import load_belonging_tfrecords
 from preprocessors.spectrogram_processor import spectrogram_preprocessor
+from preprocessors.tfrecord_processor import tfrecord_preprocessor
 from architectures.chrononet import ChronoNet
 from trainers.belonging_trainer import BelongingTrainer
 
 DATA_MAP = {
     "load_belonging_spectrograms": load_belonging_spectrograms,
+    "load_belonging_tfrecords": load_belonging_tfrecords,
 }
 PREPROCESSOR_MAP = {
     "spectrogram_preprocessor": spectrogram_preprocessor,
+    "tfrecord_preprocessor": tfrecord_preprocessor,
 }
 MODEL_MAP = {
     "ChronoNet": ChronoNet,

@@ -1,0 +1,36 @@
+{
+    "id": "belonging_prediction_chrononet_tfrecord_v1",
+    "log_filename": "belonging_results.csv",
+    "dataset_params": {
+        "name": "load_belonging_tfrecords",
+        "tfrecords_dir": "/path/to/tfrecords",
+        "channels": ["TP9", "AF7", "AF8", "TP10"]
+    },
+    "preprocessor_params": {
+        "name": "tfrecord_preprocessor",
+        "test_split": 0.1,
+        "val_split": 0.1,
+        "batch_size": 1,
+        "cv_folds": 1,
+        "downsample_train": true,
+        "max_windows_per_person": 1000
+    },
+    "model_params": {
+        "name": "ChronoNet",
+        "conv_filters": 32,
+        "conv_kernel_sizes": [2, 4, 8],
+        "conv_stride": 2,
+        "num_blocks": 3,
+        "gru_hidden_size": 32,
+        "dropout_rate": 0.3,
+        "use_batch_norm": true,
+        "window_batch_size": 64
+    },
+    "trainer_params": {
+        "name": "BelongingTrainer",
+        "num_epochs": 1,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "patience": 15
+    }
+}
