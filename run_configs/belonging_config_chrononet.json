@@ -29,7 +29,7 @@
     },
     "trainer_params": {
         "name": "BelongingTrainer",
-        "num_epochs": 100,
+        "num_epochs": 1,
         "learning_rate": 0.001,
         "weight_decay": 0.0001,
         "patience": 15
