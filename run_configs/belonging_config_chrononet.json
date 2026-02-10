@@ -10,8 +10,8 @@
     },
     "preprocessor_params": {
         "name": "spectrogram_preprocessor",
-        "test_split": 0.0,
-        "val_split": 0.0,
+        "test_split": 0.1,
+        "val_split": 0.1,
         "batch_size": 1,
         "cv_folds": 1,
         "downsample_train": true,
