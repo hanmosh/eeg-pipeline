@@ -11,17 +11,21 @@ _TF_IMPORT_ERROR = (
     "Install it or re-export scalograms/shape as raw numpy bytes."
 )
 
-_QUESTION_PATTERN = re.compile(r"eeg_[^_]+_(\d+)_\d+_scalograms\.tfrecord$")
+_FILENAME_PATTERN = re.compile(
+    r"^eeg_(?P<person>[^_]+)_(?P<question>\d+)_(?P<timestamp>\d+)_scalograms\.tfrecord$"
+)
 
 
-def _extract_question_number(filename):
-    match = _QUESTION_PATTERN.search(filename)
+def _parse_filename(filename):
+    match = _FILENAME_PATTERN.match(filename)
     if not match:
-        return None
+        return None, None
+    person_id = match.group('person')
     try:
-        return int(match.group(1))
+        question_num = int(match.group('question'))
     except ValueError:
-        return None
+        return None, None
+    return person_id, question_num
 
 
 def _coerce_bytes(value, field_name):
@@ -202,9 +206,8 @@ def load_belonging_tfrecords(dataset_params, metadata):
     if not tfrecord_paths:
         raise RuntimeError(f"No TFRecord files found in {tfrecords_dir}")
 
-    scalograms_list = []
-    person_ids = []
-    labels = []
+    person_to_scalograms = {}
+    person_to_label = {}
     skipped_empty = []
     skipped_question = []
 
@@ -214,15 +217,14 @@ def load_belonging_tfrecords(dataset_params, metadata):
 
     for tfrecord_path in tfrecord_paths:
         filename = os.path.basename(tfrecord_path)
-        question_num = _extract_question_number(filename)
-        if question_num is None:
+        person_id, question_num = _parse_filename(filename)
+        if person_id is None or question_num is None:
             raise ValueError(
-                f"Unable to parse question number from TFRecord filename: {filename}"
+                f"Unable to parse person/question from TFRecord filename: {filename}"
             )
         if question_num > 33:
             skipped_question.append(tfrecord_path)
             continue
-        person_id = os.path.splitext(os.path.basename(tfrecord_path))[0]
         records = _load_tfrecord_records(tfrecord_path, compression_type=compression_type)
         if len(records) == 0:
             skipped_empty.append(tfrecord_path)
@@ -263,9 +265,13 @@ def load_belonging_tfrecords(dataset_params, metadata):
             )
 
         total_windows += int(n_windows)
-        scalograms_list.append(scalograms)
-        person_ids.append(person_id)
-        labels.append(label)
+        person_to_scalograms.setdefault(person_id, []).append(scalograms)
+        if person_id in person_to_label and person_to_label[person_id] != label:
+            raise ValueError(
+                f"Label mismatch for person {person_id}: "
+                f"{person_to_label[person_id]} vs {label} in {tfrecord_path}."
+            )
+        person_to_label[person_id] = label
 
     if channels and num_channels is not None and len(channels) != num_channels:
         raise ValueError(
@@ -275,12 +281,16 @@ def load_belonging_tfrecords(dataset_params, metadata):
         logger.log('skipped_empty_tfrecords', len(skipped_empty))
     if skipped_question:
         logger.log('skipped_question_tfrecords', len(skipped_question))
-    if not scalograms_list:
+    if not person_to_scalograms:
         raise RuntimeError(
             "No non-empty TFRecord files found. "
             "If the TFRecords were written with compression, set "
             "`dataset_params.tfrecords_compression` to 'GZIP' or 'ZLIB'."
         )
+
+    person_ids = sorted(person_to_scalograms.keys())
+    scalograms_list = [np.concatenate(person_to_scalograms[pid], axis=0) for pid in person_ids]
+    labels = [person_to_label[pid] for pid in person_ids]
 
     unique_labels, counts = np.unique(labels, return_counts=True)
     for lbl, cnt in zip(unique_labels, counts):
