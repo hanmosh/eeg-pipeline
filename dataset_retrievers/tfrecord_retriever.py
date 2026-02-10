@@ -1,5 +1,6 @@
 import os
 import glob
+import re
 import numpy as np
 
 from utils.log import logger
@@ -9,6 +10,18 @@ _TF_IMPORT_ERROR = (
     "TensorFlow is required to decode serialized tensors. "
     "Install it or re-export scalograms/shape as raw numpy bytes."
 )
+
+_QUESTION_PATTERN = re.compile(r"eeg_[^_]+_(\d+)_\d+_scalograms\.tfrecord$")
+
+
+def _extract_question_number(filename):
+    match = _QUESTION_PATTERN.search(filename)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
 
 
 def _coerce_bytes(value, field_name):
@@ -116,43 +129,68 @@ def _decode_scalograms(scalogram_value, shape, tfrecord_path):
     return array
 
 
-def _load_tfrecord_records(tfrecord_path):
-    try:
-        from tfrecord.tfrecord_loader import tfrecord_loader  # type: ignore
-    except Exception:
-        tf = _get_tensorflow()
-        if tf is None:
+def _load_tfrecord_records_tensorflow(tfrecord_path, compression_type=None):
+    tf = _get_tensorflow()
+    if tf is None:
+        return None
+    feature_description = {
+        'scalograms': tf.io.FixedLenFeature([], tf.string),
+        'shape': tf.io.FixedLenFeature([], tf.string),
+        'label': tf.io.FixedLenFeature([], tf.int64),
+    }
+    records = []
+    dataset = tf.data.TFRecordDataset([tfrecord_path], compression_type=compression_type)
+    for raw_record in dataset:
+        example = tf.io.parse_single_example(raw_record, feature_description)
+        records.append({
+            'scalograms': example['scalograms'].numpy(),
+            'shape': example['shape'].numpy(),
+            'label': example['label'].numpy(),
+        })
+    return records
+
+
+def _load_tfrecord_records(tfrecord_path, compression_type=None):
+    if compression_type:
+        records = _load_tfrecord_records_tensorflow(tfrecord_path, compression_type=compression_type)
+        if records is None:
             raise ImportError(
-                "The 'tfrecord' package is not installed and TensorFlow is unavailable. "
-                "Install with `pip install tfrecord` or install TensorFlow to read TFRecords."
+                "TensorFlow is required to read compressed TFRecords. "
+                "Install TensorFlow or remove the compression setting."
             )
-        feature_description = {
-            'scalograms': tf.io.FixedLenFeature([], tf.string),
-            'shape': tf.io.FixedLenFeature([], tf.string),
-            'label': tf.io.FixedLenFeature([], tf.int64),
-        }
-        records = []
-        dataset = tf.data.TFRecordDataset([tfrecord_path])
-        for raw_record in dataset:
-            example = tf.io.parse_single_example(raw_record, feature_description)
-            records.append({
-                'scalograms': example['scalograms'].numpy(),
-                'shape': example['shape'].numpy(),
-                'label': example['label'].numpy(),
-            })
         return records
 
-    description = {
-        'scalograms': 'byte',
-        'shape': 'byte',
-        'label': 'int',
-    }
-    return list(tfrecord_loader(tfrecord_path, None, description))
+    records = None
+    try:
+        from tfrecord.tfrecord_loader import tfrecord_loader  # type: ignore
+        description = {
+            'scalograms': 'byte',
+            'shape': 'byte',
+            'label': 'int',
+        }
+        records = list(tfrecord_loader(tfrecord_path, None, description))
+        if records:
+            return records
+    except Exception:
+        records = None
+
+    records_tf = _load_tfrecord_records_tensorflow(tfrecord_path)
+    if records_tf is not None:
+        return records_tf
+
+    if records is not None:
+        return records
+
+    raise ImportError(
+        "The 'tfrecord' package is not installed and TensorFlow is unavailable. "
+        "Install with `pip install tfrecord` or install TensorFlow to read TFRecords."
+    )
 
 
 def load_belonging_tfrecords(dataset_params, metadata):
     """Load TFRecord scalograms and labels per participant session."""
     tfrecords_dir = dataset_params.get('tfrecords_dir')
+    compression_type = dataset_params.get('tfrecords_compression')
     channels = dataset_params.get('channels', ['TP9', 'AF7', 'AF8', 'TP10'])
 
     if not tfrecords_dir:
@@ -167,17 +205,33 @@ def load_belonging_tfrecords(dataset_params, metadata):
     scalograms_list = []
     person_ids = []
     labels = []
+    skipped_empty = []
+    skipped_question = []
 
     image_size = None
     num_channels = None
     total_windows = 0
 
     for tfrecord_path in tfrecord_paths:
+        filename = os.path.basename(tfrecord_path)
+        question_num = _extract_question_number(filename)
+        if question_num is None:
+            raise ValueError(
+                f"Unable to parse question number from TFRecord filename: {filename}"
+            )
+        if question_num > 33:
+            skipped_question.append(tfrecord_path)
+            continue
         person_id = os.path.splitext(os.path.basename(tfrecord_path))[0]
-        records = _load_tfrecord_records(tfrecord_path)
+        records = _load_tfrecord_records(tfrecord_path, compression_type=compression_type)
+        if len(records) == 0:
+            skipped_empty.append(tfrecord_path)
+            continue
         if len(records) != 1:
             raise ValueError(
-                f"Expected exactly 1 record in {tfrecord_path}, found {len(records)}."
+                f"Expected exactly 1 record in {tfrecord_path}, found {len(records)}. "
+                "If the TFRecord was written with compression, set "
+                "`dataset_params.tfrecords_compression` to 'GZIP' or 'ZLIB'."
             )
         record = records[0]
 
@@ -216,6 +270,16 @@ def load_belonging_tfrecords(dataset_params, metadata):
     if channels and num_channels is not None and len(channels) != num_channels:
         raise ValueError(
             f"Configured channels length ({len(channels)}) does not match TFRecord channels ({num_channels})."
+        )
+    if skipped_empty:
+        logger.log('skipped_empty_tfrecords', len(skipped_empty))
+    if skipped_question:
+        logger.log('skipped_question_tfrecords', len(skipped_question))
+    if not scalograms_list:
+        raise RuntimeError(
+            "No non-empty TFRecord files found. "
+            "If the TFRecords were written with compression, set "
+            "`dataset_params.tfrecords_compression` to 'GZIP' or 'ZLIB'."
         )
 
     unique_labels, counts = np.unique(labels, return_counts=True)
