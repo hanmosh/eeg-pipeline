@@ -72,37 +72,35 @@ class TFRecordSequenceDataset(Dataset):
         self.sequences.append((pid, start, end))
         self.sequence_labels.append(label)
         length = end - start
-        self.labels.extend([label] * length)
+        self.labels.append(label)
         self.num_windows += length
 
     def __getitem__(self, idx):
         pid, start, end = self.sequences[idx]
         windows = self.person_to_windows[pid][start:end]
         windows = torch.as_tensor(windows, dtype=torch.float32)
-        label = int(self.person_to_label[pid])
-        labels = torch.full((windows.size(0),), label, dtype=torch.long)
-        return windows, labels
+        label = self.sequence_labels[idx]
+        return windows, label, pid
 
 
 def sequence_collate_fn(batch):
-    windows, labels = zip(*batch)
+    windows, labels, pids = zip(*batch)
     lengths = torch.tensor([w.size(0) for w in windows], dtype=torch.long)
     max_len = int(lengths.max()) if len(lengths) > 0 else 0
     batch_size = len(windows)
 
     if batch_size == 0:
-        return torch.empty(0), torch.empty(0, dtype=torch.long), lengths
+        return torch.empty(0), torch.empty(0, dtype=torch.long), lengths, []
 
     channels, height, width = windows[0].shape[1:]
     padded_windows = torch.zeros((batch_size, max_len, channels, height, width), dtype=windows[0].dtype)
-    padded_labels = torch.zeros((batch_size, max_len), dtype=torch.long)
 
-    for i, (win, lab) in enumerate(zip(windows, labels)):
+    for i, win in enumerate(windows):
         length = win.size(0)
         padded_windows[i, :length] = win
-        padded_labels[i, :length] = lab
 
-    return padded_windows, padded_labels, lengths
+    labels = torch.tensor(labels, dtype=torch.long)
+    return padded_windows, labels, lengths, list(pids)
 
 
 def _validate_stratified_splits(n_total, test_split, val_split, num_classes, class_counts):

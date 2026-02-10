@@ -150,19 +150,23 @@ class ChronoNet(nn.Module):
         embeddings = embeddings.view(batch_size, num_windows, -1)
 
         if lengths is not None:
-            lengths = lengths.cpu()
+            lengths_cpu = lengths.cpu()
             packed = nn.utils.rnn.pack_padded_sequence(
-                embeddings, lengths, batch_first=True, enforce_sorted=False
+                embeddings, lengths_cpu, batch_first=True, enforce_sorted=False
             )
             packed_out, _ = self.temporal_gru(packed)
             temporal_out, _ = nn.utils.rnn.pad_packed_sequence(
                 packed_out, batch_first=True, total_length=num_windows
             )
+            idx = (lengths_cpu - 1).clamp(min=0).long().to(temporal_out.device)
+            batch_idx = torch.arange(batch_size, device=temporal_out.device)
+            last_out = temporal_out[batch_idx, idx]
         else:
             temporal_out, _ = self.temporal_gru(embeddings)
+            last_out = temporal_out[:, -1, :]
 
-        temporal_out = self.temporal_dropout(temporal_out)
-        return self.temporal_fc(temporal_out)
+        last_out = self.temporal_dropout(last_out)
+        return self.temporal_fc(last_out)
 
     def forward(self, x, lengths=None):
         if x.dim() == 5:

@@ -45,6 +45,56 @@ class BelongingTrainer:
         preds = torch.argmax(logits, dim=1)
         return loss, preds, probs, labels_use
 
+    def _unpack_batch(self, batch):
+        if isinstance(batch, (list, tuple)):
+            if len(batch) == 3:
+                inputs, labels, lengths = batch
+                return inputs, labels, lengths, None
+            if len(batch) == 4:
+                inputs, labels, lengths, person_ids = batch
+                return inputs, labels, lengths, person_ids
+        raise ValueError("Expected batch to be (inputs, labels, lengths[, person_ids]).")
+
+    def _aggregate_participant_probs(self, probs, labels, person_ids):
+        person_prob_sums = {}
+        person_counts = {}
+        person_labels = {}
+
+        for pid, prob, label in zip(person_ids, probs, labels):
+            pid = str(pid)
+            if pid not in person_prob_sums:
+                person_prob_sums[pid] = prob.astype(float)
+                person_counts[pid] = 1
+                person_labels[pid] = int(label)
+            else:
+                person_prob_sums[pid] += prob
+                person_counts[pid] += 1
+                if person_labels[pid] != int(label):
+                    print(
+                        f"Warning: inconsistent labels for participant {pid} "
+                        f"({person_labels[pid]} vs {int(label)})."
+                    )
+
+        agg_pids = sorted(person_prob_sums.keys())
+        agg_probs = np.vstack([person_prob_sums[pid] / person_counts[pid] for pid in agg_pids])
+        agg_labels = np.array([person_labels[pid] for pid in agg_pids], dtype=int)
+        return agg_labels, agg_probs, agg_pids
+
+    def _print_participant_table(self, split_name, pids, labels, probs):
+        if probs.ndim != 2 or probs.shape[0] == 0:
+            return
+        preds = np.argmax(probs, axis=1)
+        if probs.shape[1] == 2:
+            prob_vals = probs[:, 1]
+            prob_header = "P(class=1)"
+        else:
+            prob_vals = probs.max(axis=1)
+            prob_header = "P(pred)"
+
+        print(f"\n{split_name.capitalize()} Participant Results:")
+        print(f"{'participant':>12}  {'label':>5}  {'pred':>5}  {prob_header:>10}")
+        for pid, label, pred, prob in zip(pids, labels, preds, prob_vals):
+            print(f"{pid:>12}  {label:>5d}  {pred:>5d}  {prob:>10.4f}")
     def _compute_prf(self, labels, preds):
         labels_arr = np.array(labels, dtype=int)
         preds_arr = np.array(preds, dtype=int)
@@ -143,8 +193,11 @@ class BelongingTrainer:
             train_losses = []
             train_preds = []
             train_labels = []
+            train_probs = []
+            train_person_ids = []
 
-            for inputs, labels, lengths in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]"):
+            for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]"):
+                inputs, labels, lengths, person_ids = self._unpack_batch(batch)
                 labels = labels.to(self.device)
                 lengths = lengths.to(self.device)
 
@@ -160,11 +213,31 @@ class BelongingTrainer:
                 train_losses.append(loss.item())
                 train_preds.extend(preds.detach().cpu().numpy())
                 train_labels.extend(labels_use.detach().cpu().numpy())
+                train_probs.extend(_probs.detach().cpu().numpy())
+                if person_ids is not None:
+                    train_person_ids.extend(list(person_ids))
 
             avg_train_loss = np.mean(train_losses)
-            train_accuracy = accuracy_score(train_labels, train_preds)
+            train_labels = np.array(train_labels, dtype=int)
+            train_preds = np.array(train_preds, dtype=int)
+            train_probs = np.array(train_probs, dtype=float)
+            use_participant_train = len(train_person_ids) == len(train_labels) and len(train_person_ids) > 0
+            if use_participant_train:
+                participant_labels, participant_probs, _ = self._aggregate_participant_probs(
+                    train_probs, train_labels, train_person_ids
+                )
+                participant_preds = np.argmax(participant_probs, axis=1)
+                train_labels_for_metrics = participant_labels
+                train_preds_for_metrics = participant_preds
+                train_metric_level = 'participant'
+            else:
+                train_labels_for_metrics = train_labels
+                train_preds_for_metrics = train_preds
+                train_metric_level = 'sequence'
+
+            train_accuracy = accuracy_score(train_labels_for_metrics, train_preds_for_metrics)
             train_precision, train_recall, train_f1, train_avg = self._compute_prf(
-                train_labels, train_preds
+                train_labels_for_metrics, train_preds_for_metrics
             )
 
             model_tracker.track_metric('train_loss', avg_train_loss)
@@ -174,7 +247,7 @@ class BelongingTrainer:
             model_tracker.track_metric('train_f1', train_f1)
 
             if val_loader is not None:
-                val_loss, val_accuracy, val_precision, val_recall, val_f1, val_avg = self.validate(
+                val_loss, val_accuracy, val_precision, val_recall, val_f1, val_avg, val_metric_level = self.validate(
                     val_loader, criterion
                 )
                 model_tracker.track_metric('val_loss', val_loss)
@@ -193,10 +266,10 @@ class BelongingTrainer:
 
                 print(
                     f"Epoch {epoch+1}/{num_epochs}: "
-                    f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f}, "
+                    f"Train Loss: {avg_train_loss:.4f}, Train Acc ({train_metric_level}): {train_accuracy:.4f}, "
                     f"Train P/R/F1 ({train_avg}): {train_precision:.4f}/{train_recall:.4f}/{train_f1:.4f} | "
-                    f"Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.4f}, "
-                    f"Val P/R/F1 ({val_avg}): {val_precision:.4f}/{val_recall:.4f}/{val_f1:.4f}"
+                    f"Val Loss: {val_loss:.4f}, Val Acc ({val_metric_level}): {val_accuracy:.4f}, "
+                    f"Val P/R/F1 ({val_avg}, {val_metric_level}): {val_precision:.4f}/{val_recall:.4f}/{val_f1:.4f}"
                 )
 
                 if epochs_without_improvement >= patience:
@@ -205,7 +278,7 @@ class BelongingTrainer:
             else:
                 print(
                     f"Epoch {epoch+1}/{num_epochs}: "
-                    f"Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f}, "
+                    f"Train Loss: {avg_train_loss:.4f}, Train Acc ({train_metric_level}): {train_accuracy:.4f}, "
                     f"Train P/R/F1 ({train_avg}): {train_precision:.4f}/{train_recall:.4f}/{train_f1:.4f}"
                 )
 
@@ -225,9 +298,12 @@ class BelongingTrainer:
         val_losses = []
         val_preds = []
         val_labels = []
+        val_probs = []
+        val_person_ids = []
 
         with torch.no_grad():
-            for inputs, labels, lengths in val_loader:
+            for batch in val_loader:
+                inputs, labels, lengths, person_ids = self._unpack_batch(batch)
                 labels = labels.to(self.device)
                 lengths = lengths.to(self.device)
                 outputs = self.model(inputs.to(self.device), lengths=lengths)
@@ -238,20 +314,45 @@ class BelongingTrainer:
                 val_losses.append(loss.item())
                 val_preds.extend(preds.detach().cpu().numpy())
                 val_labels.extend(labels_use.detach().cpu().numpy())
+                val_probs.extend(_probs.detach().cpu().numpy())
+                if person_ids is not None:
+                    val_person_ids.extend(list(person_ids))
 
         avg_val_loss = np.mean(val_losses)
-        val_accuracy = accuracy_score(val_labels, val_preds)
-        val_precision, val_recall, val_f1, val_avg = self._compute_prf(val_labels, val_preds)
-        return avg_val_loss, val_accuracy, val_precision, val_recall, val_f1, val_avg
+        val_labels = np.array(val_labels, dtype=int)
+        val_preds = np.array(val_preds, dtype=int)
+        val_probs = np.array(val_probs, dtype=float)
+
+        use_participant_val = len(val_person_ids) == len(val_labels) and len(val_person_ids) > 0
+        if use_participant_val:
+            participant_labels, participant_probs, _ = self._aggregate_participant_probs(
+                val_probs, val_labels, val_person_ids
+            )
+            participant_preds = np.argmax(participant_probs, axis=1)
+            val_labels_for_metrics = participant_labels
+            val_preds_for_metrics = participant_preds
+            val_metric_level = 'participant'
+        else:
+            val_labels_for_metrics = val_labels
+            val_preds_for_metrics = val_preds
+            val_metric_level = 'sequence'
+
+        val_accuracy = accuracy_score(val_labels_for_metrics, val_preds_for_metrics)
+        val_precision, val_recall, val_f1, val_avg = self._compute_prf(
+            val_labels_for_metrics, val_preds_for_metrics
+        )
+        return avg_val_loss, val_accuracy, val_precision, val_recall, val_f1, val_avg, val_metric_level
 
     def evaluate(self, test_loader, split_name='test'):
         self.model.eval()
         test_preds = []
         test_labels = []
         test_probs = []
+        test_person_ids = []
 
         with torch.no_grad():
-            for inputs, labels, lengths in test_loader:
+            for batch in test_loader:
+                inputs, labels, lengths, person_ids = self._unpack_batch(batch)
                 labels = labels.to(self.device)
                 lengths = lengths.to(self.device)
                 outputs = self.model(inputs.to(self.device), lengths=lengths)
@@ -261,13 +362,27 @@ class BelongingTrainer:
 
                 test_preds.extend(preds.detach().cpu().numpy())
                 test_labels.extend(labels_use.detach().cpu().numpy())
-                test_probs.extend(probs[:, 1].detach().cpu().numpy())
+                test_probs.extend(probs.detach().cpu().numpy())
+                if person_ids is not None:
+                    test_person_ids.extend(list(person_ids))
 
-        accuracy = accuracy_score(test_labels, test_preds)
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            test_labels, test_preds, average='binary', zero_division=0
-        )
-        cm = confusion_matrix(test_labels, test_preds)
+        test_labels = np.array(test_labels, dtype=int)
+        test_preds = np.array(test_preds, dtype=int)
+        test_probs = np.array(test_probs, dtype=float)
+
+        use_participant_level = len(test_person_ids) == len(test_labels) and len(test_person_ids) > 0
+        if use_participant_level:
+            participant_labels, participant_probs, participant_ids = self._aggregate_participant_probs(
+                test_probs, test_labels, test_person_ids
+            )
+            participant_preds = np.argmax(participant_probs, axis=1)
+            accuracy = accuracy_score(participant_labels, participant_preds)
+            precision, recall, f1, _avg = self._compute_prf(participant_labels, participant_preds)
+            cm = confusion_matrix(participant_labels, participant_preds)
+        else:
+            accuracy = accuracy_score(test_labels, test_preds)
+            precision, recall, f1, _avg = self._compute_prf(test_labels, test_preds)
+            cm = confusion_matrix(test_labels, test_preds)
 
         logger.log(f'{split_name}_accuracy', accuracy)
         logger.log(f'{split_name}_precision', precision)
@@ -275,6 +390,10 @@ class BelongingTrainer:
         logger.log(f'{split_name}_f1', f1)
 
         print(f"\n{split_name.capitalize()} Set Results:")
+        if use_participant_level:
+            print("Metrics computed at participant level.")
+        else:
+            print("Metrics computed at sequence level (participant IDs unavailable).")
         print(f"Accuracy: {accuracy:.4f}")
         print(f"Precision: {precision:.4f}")
         print(f"Recall: {recall:.4f}")
@@ -283,6 +402,11 @@ class BelongingTrainer:
         print(cm)
 
         if split_name == 'test':
-            self._plot_roc_curve(test_labels, test_probs, split_name=split_name)
+            if use_participant_level and participant_probs.shape[1] == 2:
+                self._plot_roc_curve(participant_labels, participant_probs[:, 1], split_name=split_name)
+            elif (not use_participant_level) and test_probs.ndim == 2 and test_probs.shape[1] == 2:
+                self._plot_roc_curve(test_labels, test_probs[:, 1], split_name=split_name)
+        if use_participant_level:
+            self._print_participant_table(split_name, participant_ids, participant_labels, participant_probs)
 
         return self.model

@@ -37,6 +37,7 @@ class SpectrogramSequenceDataset(Dataset):
 
         self.sequences = []
         self.sequence_labels = []
+        self.sequence_pids = []
         self.labels = []
         self.num_windows = 0
 
@@ -64,7 +65,8 @@ class SpectrogramSequenceDataset(Dataset):
         label = int(self.person_to_label[pid])
         self.sequences.append(seq)
         self.sequence_labels.append(label)
-        self.labels.extend([label] * len(seq))
+        self.sequence_pids.append(pid)
+        self.labels.append(label)
         self.num_windows += len(seq)
 
     def _window_sort_key(self, group):
@@ -88,6 +90,7 @@ class SpectrogramSequenceDataset(Dataset):
     def __getitem__(self, idx):
         groups = self.sequences[idx]
         label = self.sequence_labels[idx]
+        pid = self.sequence_pids[idx]
 
         windows = []
         for group in groups:
@@ -105,29 +108,27 @@ class SpectrogramSequenceDataset(Dataset):
             windows.append(window)
 
         windows = torch.FloatTensor(np.stack(windows, axis=0))
-        labels = torch.full((windows.size(0),), int(label), dtype=torch.long)
-        return windows, labels
+        return windows, int(label), pid
 
 
 def sequence_collate_fn(batch):
-    windows, labels = zip(*batch)
+    windows, labels, pids = zip(*batch)
     lengths = torch.tensor([w.size(0) for w in windows], dtype=torch.long)
     max_len = int(lengths.max()) if len(lengths) > 0 else 0
     batch_size = len(windows)
 
     if batch_size == 0:
-        return torch.empty(0), torch.empty(0, dtype=torch.long), lengths
+        return torch.empty(0), torch.empty(0, dtype=torch.long), lengths, []
 
     channels, height, width = windows[0].shape[1:]
     padded_windows = torch.zeros((batch_size, max_len, channels, height, width), dtype=windows[0].dtype)
-    padded_labels = torch.zeros((batch_size, max_len), dtype=torch.long)
 
-    for i, (win, lab) in enumerate(zip(windows, labels)):
+    for i, win in enumerate(windows):
         length = win.size(0)
         padded_windows[i, :length] = win
-        padded_labels[i, :length] = lab
 
-    return padded_windows, padded_labels, lengths
+    labels = torch.tensor(labels, dtype=torch.long)
+    return padded_windows, labels, lengths, list(pids)
 
 
 def group_images_by_window(image_paths, person_ids, channels):

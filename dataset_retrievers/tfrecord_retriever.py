@@ -19,13 +19,17 @@ _FILENAME_PATTERN = re.compile(
 def _parse_filename(filename):
     match = _FILENAME_PATTERN.match(filename)
     if not match:
-        return None, None
+        return None, None, None
     person_id = match.group('person')
     try:
         question_num = int(match.group('question'))
     except ValueError:
-        return None, None
-    return person_id, question_num
+        return None, None, None
+    try:
+        timestamp = int(match.group('timestamp'))
+    except ValueError:
+        return None, None, None
+    return person_id, question_num, timestamp
 
 
 def _coerce_bytes(value, field_name):
@@ -202,9 +206,19 @@ def load_belonging_tfrecords(dataset_params, metadata):
     if not os.path.exists(tfrecords_dir):
         raise FileNotFoundError(f"TFRecords dir not found: {tfrecords_dir}")
 
-    tfrecord_paths = sorted(glob.glob(os.path.join(tfrecords_dir, '*.tfrecord')))
+    tfrecord_paths = glob.glob(os.path.join(tfrecords_dir, '*.tfrecord'))
     if not tfrecord_paths:
         raise RuntimeError(f"No TFRecord files found in {tfrecords_dir}")
+    parsed_paths = []
+    for tfrecord_path in tfrecord_paths:
+        filename = os.path.basename(tfrecord_path)
+        person_id, question_num, timestamp = _parse_filename(filename)
+        if person_id is None or question_num is None or timestamp is None:
+            raise ValueError(
+                f"Unable to parse person/question/timestamp from TFRecord filename: {filename}"
+            )
+        parsed_paths.append((person_id, question_num, timestamp, tfrecord_path))
+    parsed_paths.sort(key=lambda item: (item[0], item[1], item[2]))
 
     person_to_scalograms = {}
     person_to_label = {}
@@ -215,13 +229,8 @@ def load_belonging_tfrecords(dataset_params, metadata):
     num_channels = None
     total_windows = 0
 
-    for tfrecord_path in tfrecord_paths:
+    for person_id, question_num, _timestamp, tfrecord_path in parsed_paths:
         filename = os.path.basename(tfrecord_path)
-        person_id, question_num = _parse_filename(filename)
-        if person_id is None or question_num is None:
-            raise ValueError(
-                f"Unable to parse person/question from TFRecord filename: {filename}"
-            )
         if question_num > 33:
             skipped_question.append(tfrecord_path)
             continue
