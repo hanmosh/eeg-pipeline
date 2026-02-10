@@ -104,9 +104,11 @@ class ModelTracker:
             None
         """
         self.model_name = name
-        if save_model:
-            self.save_model = True
+        self.save_model = bool(save_model)
+        if self.save_model:
             self.filepath = self.get_filepath()
+        else:
+            self.filepath = None
 
 
     def set_model(self, model):
@@ -312,6 +314,7 @@ class ModelTracker:
         self.metrics = {}
         self.config = None
         self.filepath = None
+        self.save_model = False
 
     def save_model_details(self):
         """
