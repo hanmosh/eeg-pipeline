@@ -78,6 +78,7 @@ class ChronoNet(nn.Module):
         temporal_num_layers = model_params.get('temporal_num_layers', 1)
         temporal_bidirectional = model_params.get('temporal_bidirectional', False)
         temporal_dropout_rate = model_params.get('temporal_dropout_rate', dropout_rate)
+        self.window_batch_size = model_params.get('window_batch_size', None)
 
         blocks = []
         block_in_channels = in_channels
@@ -137,7 +138,15 @@ class ChronoNet(nn.Module):
     def forward_sequence(self, windows, lengths=None):
         batch_size, num_windows, channels, height, width = windows.shape
         windows = windows.view(batch_size * num_windows, channels, height, width)
-        embeddings = self.encode_window(windows)
+        total_windows = windows.size(0)
+        if self.window_batch_size and self.window_batch_size > 0 and total_windows > self.window_batch_size:
+            embeddings_chunks = []
+            for start in range(0, total_windows, self.window_batch_size):
+                end = min(start + self.window_batch_size, total_windows)
+                embeddings_chunks.append(self.encode_window(windows[start:end]))
+            embeddings = torch.cat(embeddings_chunks, dim=0)
+        else:
+            embeddings = self.encode_window(windows)
         embeddings = embeddings.view(batch_size, num_windows, -1)
 
         if lengths is not None:
