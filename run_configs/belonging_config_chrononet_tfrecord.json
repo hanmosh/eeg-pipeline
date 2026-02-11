@@ -24,7 +24,8 @@
         "gru_hidden_size": 32,
         "dropout_rate": 0.3,
         "use_batch_norm": true,
-        "window_batch_size": 64
+        "window_batch_size": 64,
+        "truncate_bptt": 256
     },
     "trainer_params": {
         "name": "BelongingTrainer",

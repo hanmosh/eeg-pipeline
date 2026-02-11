@@ -79,6 +79,7 @@ class ChronoNet(nn.Module):
         temporal_bidirectional = model_params.get('temporal_bidirectional', False)
         temporal_dropout_rate = model_params.get('temporal_dropout_rate', dropout_rate)
         self.window_batch_size = model_params.get('window_batch_size', None)
+        self.truncate_bptt = model_params.get('truncate_bptt', None)
 
         blocks = []
         block_in_channels = in_channels
@@ -137,6 +138,67 @@ class ChronoNet(nn.Module):
 
     def forward_sequence(self, windows, lengths=None):
         batch_size, num_windows, channels, height, width = windows.shape
+        if self.truncate_bptt and self.truncate_bptt > 0:
+            if self.temporal_gru.bidirectional:
+                raise ValueError("truncate_bptt is not supported with bidirectional temporal GRU.")
+
+            trunc = int(self.truncate_bptt)
+            lengths_cpu = lengths.cpu() if lengths is not None else torch.full(
+                (batch_size,), num_windows, dtype=torch.long
+            )
+            hidden = None
+            last_out = torch.zeros(
+                (batch_size, self.temporal_gru.hidden_size),
+                device=windows.device,
+                dtype=windows.dtype,
+            )
+
+            for start in range(0, num_windows, trunc):
+                end = min(start + trunc, num_windows)
+                chunk = windows[:, start:end]
+                chunk_len = end - start
+
+                chunk_flat = chunk.view(batch_size * chunk_len, channels, height, width)
+                total_chunk = chunk_flat.size(0)
+                if self.window_batch_size and self.window_batch_size > 0 and total_chunk > self.window_batch_size:
+                    embeddings_chunks = []
+                    for w_start in range(0, total_chunk, self.window_batch_size):
+                        w_end = min(w_start + self.window_batch_size, total_chunk)
+                        embeddings_chunks.append(self.encode_window(chunk_flat[w_start:w_end]))
+                    embeddings = torch.cat(embeddings_chunks, dim=0)
+                else:
+                    embeddings = self.encode_window(chunk_flat)
+                embeddings = embeddings.view(batch_size, chunk_len, -1)
+
+                lengths_chunk = (lengths_cpu - start).clamp(min=0, max=chunk_len)
+                active_mask = lengths_chunk > 0
+                if not torch.any(active_mask):
+                    break
+                active_idx = torch.nonzero(active_mask, as_tuple=False).squeeze(1)
+                embeddings_active = embeddings[active_idx]
+                lengths_active = lengths_chunk[active_idx]
+
+                packed = nn.utils.rnn.pack_padded_sequence(
+                    embeddings_active, lengths_active, batch_first=True, enforce_sorted=False
+                )
+                hidden_active = hidden[:, active_idx, :] if hidden is not None else None
+                _packed_out, hidden_new = self.temporal_gru(packed, hidden_active)
+
+                if hidden is None:
+                    hidden = torch.zeros(
+                        self.temporal_gru.num_layers,
+                        batch_size,
+                        self.temporal_gru.hidden_size,
+                        device=windows.device,
+                        dtype=embeddings.dtype,
+                    )
+                hidden[:, active_idx, :] = hidden_new
+                last_out[active_idx] = hidden_new[-1]
+                hidden = hidden.detach()
+
+            last_out = self.temporal_dropout(last_out)
+            return self.temporal_fc(last_out)
+
         windows = windows.view(batch_size * num_windows, channels, height, width)
         total_windows = windows.size(0)
         if self.window_batch_size and self.window_batch_size > 0 and total_windows > self.window_batch_size:
