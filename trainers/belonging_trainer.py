@@ -17,6 +17,9 @@ class BelongingTrainer:
         self.data = data
         self.metadata = metadata
         self.decision_threshold = trainer_params.get('decision_threshold', 0.5)
+        self.threshold_strategy = trainer_params.get('threshold_strategy', None)
+        self.threshold_bins = int(trainer_params.get('threshold_bins', 101))
+        self.tuned_threshold = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
         print(f"Using device: {self.device}")
@@ -84,10 +87,10 @@ class BelongingTrainer:
         agg_labels = np.array([person_labels[pid] for pid in agg_pids], dtype=int)
         return agg_labels, agg_probs, agg_pids
 
-    def _print_participant_table(self, split_name, pids, labels, probs):
+    def _print_participant_table(self, split_name, pids, labels, probs, threshold=None):
         if probs.ndim != 2 or probs.shape[0] == 0:
             return
-        preds = np.argmax(probs, axis=1)
+        preds = self._predict_from_probs(probs, threshold=threshold)
         if probs.shape[1] == 2:
             prob_vals = probs[:, 1]
             prob_header = "P(class=1)"
@@ -99,6 +102,49 @@ class BelongingTrainer:
         print(f"{'participant':>12}  {'label':>5}  {'pred':>5}  {prob_header:>10}")
         for pid, label, pred, prob in zip(pids, labels, preds, prob_vals):
             print(f"{pid:>12}  {label:>5d}  {pred:>5d}  {prob:>10.4f}")
+
+    def _predict_from_probs(self, probs, threshold=None):
+        if probs.ndim == 2 and probs.shape[1] == 2:
+            use_threshold = threshold if threshold is not None else self.decision_threshold
+            if use_threshold is not None:
+                return (probs[:, 1] >= use_threshold).astype(int)
+        return np.argmax(probs, axis=1)
+
+    def _select_threshold(self, labels, probs):
+        if probs.ndim != 2 or probs.shape[1] != 2:
+            return None
+        labels_arr = np.array(labels, dtype=int)
+        if labels_arr.size == 0 or len(np.unique(labels_arr)) < 2:
+            return None
+
+        strategy = (self.threshold_strategy or '').lower()
+        if strategy not in ('max_f1_class0', 'max_specificity'):
+            return None
+
+        thresholds = np.linspace(0.0, 1.0, max(2, self.threshold_bins))
+        best_threshold = self.decision_threshold
+        best_score = -1.0
+
+        for threshold in thresholds:
+            preds = (probs[:, 1] >= threshold).astype(int)
+            tp0 = np.sum((labels_arr == 0) & (preds == 0))
+            fp0 = np.sum((labels_arr == 1) & (preds == 0))
+            fn0 = np.sum((labels_arr == 0) & (preds == 1))
+
+            precision0 = tp0 / (tp0 + fp0) if (tp0 + fp0) > 0 else 0.0
+            recall0 = tp0 / (tp0 + fn0) if (tp0 + fn0) > 0 else 0.0
+
+            if strategy == 'max_specificity':
+                score = recall0
+            else:
+                score = 0.0 if (precision0 + recall0) == 0 else 2.0 * precision0 * recall0 / (precision0 + recall0)
+
+            if score > best_score or (score == best_score and best_threshold is not None and threshold > best_threshold):
+                best_score = score
+                best_threshold = threshold
+
+        return best_threshold
+
     def _compute_prf(self, labels, preds):
         labels_arr = np.array(labels, dtype=int)
         preds_arr = np.array(preds, dtype=int)
@@ -110,11 +156,6 @@ class BelongingTrainer:
             labels_arr, preds_arr, average=average, zero_division=0
         )
         return precision, recall, f1, average
-
-    def _predict_from_probs(self, probs):
-        if probs.ndim == 2 and probs.shape[1] == 2 and self.decision_threshold is not None:
-            return (probs[:, 1] >= self.decision_threshold).astype(int)
-        return np.argmax(probs, axis=1)
 
     def _plot_roc_curve(self, labels, probs, split_name='test'):
         if not model_tracker.save_model:
@@ -337,14 +378,22 @@ class BelongingTrainer:
             participant_labels, participant_probs, _ = self._aggregate_participant_probs(
                 val_probs, val_labels, val_person_ids
             )
-            participant_preds = self._predict_from_probs(participant_probs)
             val_labels_for_metrics = participant_labels
-            val_preds_for_metrics = participant_preds
+            val_probs_for_metrics = participant_probs
             val_metric_level = 'participant'
         else:
             val_labels_for_metrics = val_labels
-            val_preds_for_metrics = val_preds
+            val_probs_for_metrics = val_probs
             val_metric_level = 'sequence'
+
+        tuned_threshold = None
+        if self.threshold_strategy:
+            tuned_threshold = self._select_threshold(val_labels_for_metrics, val_probs_for_metrics)
+            if tuned_threshold is not None:
+                self.tuned_threshold = tuned_threshold
+                logger.log('val_threshold', tuned_threshold)
+
+        val_preds_for_metrics = self._predict_from_probs(val_probs_for_metrics, threshold=tuned_threshold)
 
         val_accuracy = accuracy_score(val_labels_for_metrics, val_preds_for_metrics)
         val_precision, val_recall, val_f1, val_avg = self._compute_prf(
@@ -384,20 +433,31 @@ class BelongingTrainer:
             participant_labels, participant_probs, participant_ids = self._aggregate_participant_probs(
                 test_probs, test_labels, test_person_ids
             )
-            participant_preds = self._predict_from_probs(participant_probs)
-            accuracy = accuracy_score(participant_labels, participant_preds)
-            precision, recall, f1, _avg = self._compute_prf(participant_labels, participant_preds)
-            cm = confusion_matrix(participant_labels, participant_preds)
+            labels_for_metrics = participant_labels
+            probs_for_metrics = participant_probs
             auc = None
             if participant_probs.shape[1] == 2 and len(np.unique(participant_labels)) == 2:
                 auc = roc_auc_score(participant_labels, participant_probs[:, 1])
         else:
-            accuracy = accuracy_score(test_labels, test_preds)
-            precision, recall, f1, _avg = self._compute_prf(test_labels, test_preds)
-            cm = confusion_matrix(test_labels, test_preds)
+            labels_for_metrics = test_labels
+            probs_for_metrics = test_probs
             auc = None
             if test_probs.ndim == 2 and test_probs.shape[1] == 2 and len(np.unique(test_labels)) == 2:
                 auc = roc_auc_score(test_labels, test_probs[:, 1])
+
+        tuned_threshold = None
+        if self.threshold_strategy and split_name == 'val':
+            tuned_threshold = self._select_threshold(labels_for_metrics, probs_for_metrics)
+            if tuned_threshold is not None:
+                self.tuned_threshold = tuned_threshold
+                logger.log(f'{split_name}_threshold', tuned_threshold)
+        elif self.threshold_strategy and self.tuned_threshold is not None:
+            tuned_threshold = self.tuned_threshold
+
+        preds_for_metrics = self._predict_from_probs(probs_for_metrics, threshold=tuned_threshold)
+        accuracy = accuracy_score(labels_for_metrics, preds_for_metrics)
+        precision, recall, f1, _avg = self._compute_prf(labels_for_metrics, preds_for_metrics)
+        cm = confusion_matrix(labels_for_metrics, preds_for_metrics)
 
         logger.log(f'{split_name}_accuracy', accuracy)
         logger.log(f'{split_name}_precision', precision)
@@ -425,6 +485,8 @@ class BelongingTrainer:
         elif (not use_participant_level) and test_probs.ndim == 2 and test_probs.shape[1] == 2:
             self._plot_roc_curve(test_labels, test_probs[:, 1], split_name=split_name)
         if use_participant_level:
-            self._print_participant_table(split_name, participant_ids, participant_labels, participant_probs)
+            self._print_participant_table(
+                split_name, participant_ids, participant_labels, participant_probs, threshold=tuned_threshold
+            )
 
         return self.model

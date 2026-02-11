@@ -33,6 +33,7 @@
         "learning_rate": 0.001,
         "weight_decay": 0.0001,
         "patience": 5,
-        "decision_threshold": 0.7
+        "threshold_strategy": "max_f1_class0",
+        "threshold_bins": 101
     }
 }
