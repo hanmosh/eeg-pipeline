@@ -3,7 +3,7 @@
     "log_filename": "belonging_results.csv",
     "dataset_params": {
         "name": "load_belonging_tfrecords",
-        "tfrecords_dir": "/content/tfrecords/quick_scalograms_tf/1",
+        "tfrecords_dir": "/content/tfrecords/quick_scalograms_tf/merged",
         "channels": ["TP9", "AF7", "AF8", "TP10"]
     },
     "preprocessor_params": {
