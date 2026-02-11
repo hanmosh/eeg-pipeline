@@ -63,7 +63,6 @@ def _coerce_int(value, field_name):
 
 def _get_tensorflow():
     try:
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
         os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
         import tensorflow as tf  # type: ignore
         try:
