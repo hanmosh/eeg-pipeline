@@ -57,14 +57,15 @@ class TFRecordSequenceDataset(Dataset):
         return len(self.sequences)
 
     def _maybe_downsample(self, windows):
-        if not self.downsample:
-            return windows
         if self.max_windows_per_person is None or self.max_windows_per_person <= 0:
             return windows
         if len(windows) <= self.max_windows_per_person:
             return windows
-        start_max = len(windows) - self.max_windows_per_person
-        start = np.random.randint(0, start_max + 1)
+        if self.downsample:
+            start_max = len(windows) - self.max_windows_per_person
+            start = np.random.randint(0, start_max + 1)
+        else:
+            start = 0
         return windows[start:start + self.max_windows_per_person]
 
     def _add_sequence(self, pid, start, end):
