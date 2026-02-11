@@ -17,19 +17,22 @@ def verify_config(config):
             raise ValueError(f"Missing required config key: {key}")
 
 
-def start_pipeline(config_file, data_map, preprocessor_map, model_map, trainer_map, save_model=False):
-    if not config_file.endswith('.json'):
-        raise ValueError("config_file must be a .json file")
-    if os.path.isabs(config_file) or os.path.exists(config_file):
-        config_path = config_file
-    else:
-        config_path = os.path.join('run_configs', config_file)
-
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-
+def run_config(
+    config,
+    data_map,
+    preprocessor_map,
+    model_map,
+    trainer_map,
+    save_model=False,
+    log_filename_override=None,
+    clear_logger=False,
+):
     verify_config(config)
     config_copy = deepcopy(config)
+    if log_filename_override:
+        config_copy["log_filename"] = log_filename_override
+    if clear_logger:
+        logger.clear()
 
     dataset_params = config_copy["dataset_params"]
     preprocessor_params = config_copy["preprocessor_params"]
@@ -107,3 +110,25 @@ def start_pipeline(config_file, data_map, preprocessor_map, model_map, trainer_m
 
     logger_filename = config_copy.get("log_filename", "default_log.csv")
     logger.save(logger_filename)
+    return logger.build_entry_dict()
+
+
+def start_pipeline(config_file, data_map, preprocessor_map, model_map, trainer_map, save_model=False):
+    if not config_file.endswith('.json'):
+        raise ValueError("config_file must be a .json file")
+    if os.path.isabs(config_file) or os.path.exists(config_file):
+        config_path = config_file
+    else:
+        config_path = os.path.join('run_configs', config_file)
+
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+
+    return run_config(
+        config,
+        data_map,
+        preprocessor_map,
+        model_map,
+        trainer_map,
+        save_model=save_model,
+    )

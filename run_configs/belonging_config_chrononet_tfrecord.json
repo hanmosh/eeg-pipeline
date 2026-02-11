@@ -13,15 +13,7 @@
         "batch_size": 1,
         "cv_folds": 3,
         "downsample_train": false,
-        "max_windows_per_person": 1000,
-        "exclude_person_ids": [
-            "67d0a48d0b0cf28d843388f3",
-            "67c27401f112be75fec84544",
-            "67ca14718ec0960305366b64",
-            "67c281f51cbbf464aae34ba0",
-            "67c27f21aceb822fa9254d79",
-            "680acc8a59c825dbf7c31deb"
-        ]
+        "max_windows_per_person": 1000
     },
     "model_params": {
         "name": "ChronoNet",
@@ -43,5 +35,13 @@
         "patience": 5,
         "threshold_strategy": "max_f1_class0",
         "threshold_bins": 101
+    },
+    "grid_search": {
+        "metric": "accuracy",
+        "params": {
+            "trainer_params.learning_rate": [0.001, 0.0003],
+            "model_params.dropout_rate": [0.2, 0.4],
+            "model_params.gru_hidden_size": [16, 32]
+        }
     }
 }

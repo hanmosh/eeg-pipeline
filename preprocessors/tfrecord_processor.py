@@ -152,7 +152,6 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
     max_windows_per_person = preprocessor_params.get('max_windows_per_person', None)
     sequence_length = preprocessor_params.get('sequence_length', None)
     sequence_stride = preprocessor_params.get('sequence_stride', None)
-    exclude_person_ids = preprocessor_params.get('exclude_person_ids', []) or []
 
     scalograms_list = X.get('scalograms')
     person_ids = X.get('person_ids')
@@ -168,15 +167,6 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
         person_to_windows[pid_str] = np.asarray(scalograms, dtype=np.float32)
         if pid_str not in person_to_label:
             person_to_label[pid_str] = int(label)
-
-    if exclude_person_ids:
-        exclude_set = {str(pid) for pid in exclude_person_ids}
-        for pid in list(person_to_windows.keys()):
-            if pid in exclude_set:
-                person_to_windows.pop(pid, None)
-                person_to_label.pop(pid, None)
-        logger.log('excluded_person_ids', len(exclude_set))
-        logger.log('excluded_person_ids_list', sorted(exclude_set))
 
     unique_person_ids = np.array(list(person_to_windows.keys()))
     unique_labels = np.array([person_to_label[str(pid)] for pid in unique_person_ids])
