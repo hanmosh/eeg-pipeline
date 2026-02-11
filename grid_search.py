@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import itertools
 import json
 import os
@@ -66,6 +67,45 @@ def _load_config(config_file):
         return json.load(f), config_path
 
 
+def _grid_signature(config_path, metric, params, max_trials):
+    payload = {
+        "config_path": os.path.abspath(config_path),
+        "metric": metric,
+        "params": params,
+        "max_trials": max_trials,
+    }
+    encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha1(encoded).hexdigest()
+
+
+def _state_path(grid_search, base_config, signature):
+    filename = grid_search.get("state_file")
+    if filename:
+        if os.path.isabs(filename):
+            return filename
+        if os.path.dirname(filename):
+            return filename
+        return os.path.join("logs", filename)
+
+    base_id = base_config.get("id", "config")
+    safe_id = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in base_id)
+    return os.path.join("logs", f"grid_search_state_{safe_id}_{signature[:8]}.json")
+
+
+def _load_state(path):
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
+
+def _save_state(path, state):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(state, f, indent=2)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Grid search for pipeline configs")
     parser.add_argument("config_file", nargs="?", default="belonging_config_chrononet_tfrecord.json")
@@ -89,6 +129,10 @@ def main():
     if max_trials is not None:
         combos = combos[: int(max_trials)]
 
+    signature = _grid_signature(config_path, metric, params, max_trials)
+    state_path = _state_path(grid_search, base_config, signature)
+    resume = grid_search.get("resume", True)
+
     log_filename = grid_search.get("log_filename")
     if not log_filename:
         base_log = base_config.get("log_filename", "default_log.csv")
@@ -99,8 +143,24 @@ def main():
     best_score = None
     best_trial = None
     results = []
+    completed = set()
+
+    if resume:
+        state = _load_state(state_path)
+        if state and state.get("signature") == signature:
+            completed = set(state.get("completed_trials", []))
+            results = state.get("results", [])
+            best_trial = state.get("best_trial")
+            best_score = best_trial.get("score") if best_trial else None
+            if completed:
+                print(f"Resuming: {len(completed)} completed trial(s) from {state_path}")
+        elif state:
+            print(f"State file signature mismatch; starting fresh: {state_path}")
 
     for idx, combo in enumerate(combos, start=1):
+        if idx in completed:
+            print(f"\nTrial {idx}/{len(combos)} (skipped, already completed)")
+            continue
         trial_config = deepcopy(base_config)
         trial_params = {}
         for (path, _), value in zip(param_items, combo):
@@ -141,6 +201,15 @@ def main():
             best_trial = results[-1]
 
         print(f"  {metric_key} = {score:.4f}")
+
+        completed.add(idx)
+        state_payload = {
+            "signature": signature,
+            "completed_trials": sorted(completed),
+            "results": results,
+            "best_trial": best_trial,
+        }
+        _save_state(state_path, state_payload)
 
     if best_trial:
         print("\nBest trial:")
