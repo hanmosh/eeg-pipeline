@@ -13,7 +13,15 @@
         "batch_size": 1,
         "cv_folds": 3,
         "downsample_train": false,
-        "max_windows_per_person": 1000
+        "max_windows_per_person": 1000,
+        "exclude_person_ids": [
+            "67d0a48d0b0cf28d843388f3",
+            "67c27401f112be75fec84544",
+            "67ca14718ec0960305366b64",
+            "67c281f51cbbf464aae34ba0",
+            "67c27f21aceb822fa9254d79",
+            "680acc8a59c825dbf7c31deb"
+        ]
     },
     "model_params": {
         "name": "ChronoNet",
