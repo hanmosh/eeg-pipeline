@@ -269,6 +269,7 @@ def spectrogram_preprocessor(preprocessor_params, X, y, metadata):
                 image_size=image_size,
                 sequence_length=sequence_length,
                 sequence_stride=sequence_stride,
+                max_windows_per_person=max_windows_per_person,
                 downsample=False,
             )
 
@@ -357,6 +358,7 @@ def spectrogram_preprocessor(preprocessor_params, X, y, metadata):
         image_size=image_size,
         sequence_length=sequence_length,
         sequence_stride=sequence_stride,
+        max_windows_per_person=max_windows_per_person,
         downsample=False,
     ) if len(val_persons) > 0 else None
     test_dataset = SpectrogramSequenceDataset(
@@ -367,6 +369,7 @@ def spectrogram_preprocessor(preprocessor_params, X, y, metadata):
         image_size=image_size,
         sequence_length=sequence_length,
         sequence_stride=sequence_stride,
+        max_windows_per_person=max_windows_per_person,
         downsample=False,
     ) if len(test_persons) > 0 else None
 
