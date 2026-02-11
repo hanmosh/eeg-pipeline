@@ -16,6 +16,7 @@ class BelongingTrainer:
         self.model = model
         self.data = data
         self.metadata = metadata
+        self.decision_threshold = trainer_params.get('decision_threshold', 0.5)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
         print(f"Using device: {self.device}")
@@ -42,7 +43,10 @@ class BelongingTrainer:
             labels_use = labels
 
         probs = torch.softmax(logits, dim=1)
-        preds = torch.argmax(logits, dim=1)
+        if probs.shape[1] == 2 and self.decision_threshold is not None:
+            preds = (probs[:, 1] >= self.decision_threshold).long()
+        else:
+            preds = torch.argmax(logits, dim=1)
         return loss, preds, probs, labels_use
 
     def _unpack_batch(self, batch):
@@ -106,6 +110,11 @@ class BelongingTrainer:
             labels_arr, preds_arr, average=average, zero_division=0
         )
         return precision, recall, f1, average
+
+    def _predict_from_probs(self, probs):
+        if probs.ndim == 2 and probs.shape[1] == 2 and self.decision_threshold is not None:
+            return (probs[:, 1] >= self.decision_threshold).astype(int)
+        return np.argmax(probs, axis=1)
 
     def _plot_roc_curve(self, labels, probs, split_name='test'):
         if not model_tracker.save_model:
@@ -226,7 +235,7 @@ class BelongingTrainer:
                 participant_labels, participant_probs, _ = self._aggregate_participant_probs(
                     train_probs, train_labels, train_person_ids
                 )
-                participant_preds = np.argmax(participant_probs, axis=1)
+                participant_preds = self._predict_from_probs(participant_probs)
                 train_labels_for_metrics = participant_labels
                 train_preds_for_metrics = participant_preds
                 train_metric_level = 'participant'
@@ -328,7 +337,7 @@ class BelongingTrainer:
             participant_labels, participant_probs, _ = self._aggregate_participant_probs(
                 val_probs, val_labels, val_person_ids
             )
-            participant_preds = np.argmax(participant_probs, axis=1)
+            participant_preds = self._predict_from_probs(participant_probs)
             val_labels_for_metrics = participant_labels
             val_preds_for_metrics = participant_preds
             val_metric_level = 'participant'
@@ -375,7 +384,7 @@ class BelongingTrainer:
             participant_labels, participant_probs, participant_ids = self._aggregate_participant_probs(
                 test_probs, test_labels, test_person_ids
             )
-            participant_preds = np.argmax(participant_probs, axis=1)
+            participant_preds = self._predict_from_probs(participant_probs)
             accuracy = accuracy_score(participant_labels, participant_preds)
             precision, recall, f1, _avg = self._compute_prf(participant_labels, participant_preds)
             cm = confusion_matrix(participant_labels, participant_preds)
