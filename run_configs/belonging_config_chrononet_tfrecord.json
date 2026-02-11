@@ -17,15 +17,15 @@
     },
     "model_params": {
         "name": "ChronoNet",
-        "conv_filters": 32,
+        "conv_filters": 16,
         "conv_kernel_sizes": [2, 4, 8],
         "conv_stride": 2,
         "num_blocks": 3,
-        "gru_hidden_size": 32,
+        "gru_hidden_size": 16,
         "dropout_rate": 0.3,
         "use_batch_norm": true,
-        "window_batch_size": 64,
-        "truncate_bptt": 256
+        "window_batch_size": 8,
+        "truncate_bptt": 64
     },
     "trainer_params": {
         "name": "BelongingTrainer",
