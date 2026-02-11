@@ -249,6 +249,12 @@ def spectrogram_preprocessor(preprocessor_params, X, y, metadata):
         for fold_idx, (train_idx, val_idx) in enumerate(skf.split(unique_person_ids, unique_labels), start=1):
             train_persons = unique_person_ids[train_idx]
             val_persons = unique_person_ids[val_idx]
+            train_labels = [person_to_label[str(pid)] for pid in train_persons]
+            val_labels = [person_to_label[str(pid)] for pid in val_persons]
+            train_pos = int(sum(train_labels))
+            val_pos = int(sum(val_labels))
+            train_neg = len(train_labels) - train_pos
+            val_neg = len(val_labels) - val_pos
 
             train_dataset = SpectrogramSequenceDataset(
                 train_persons,
@@ -277,6 +283,10 @@ def spectrogram_preprocessor(preprocessor_params, X, y, metadata):
                 f"Fold {fold_idx}/{cv_folds}: "
                 f"Train {len(train_persons)} people ({train_dataset.num_windows} windows), "
                 f"Val {len(val_persons)} people ({val_dataset.num_windows} windows)"
+            )
+            print(
+                f"Fold {fold_idx}: Train {train_pos} pos / {train_neg} neg | "
+                f"Val {val_pos} pos / {val_neg} neg"
             )
 
             train_loader = DataLoader(
