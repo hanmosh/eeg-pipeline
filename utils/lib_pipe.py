@@ -3,6 +3,8 @@ import os
 from copy import deepcopy
 from datetime import datetime
 
+import numpy as np
+
 from utils.log import logger, model_tracker
 
 
@@ -55,6 +57,7 @@ def start_pipeline(config_file, data_map, preprocessor_map, model_map, trainer_m
 
     fold_data_list = data if isinstance(data, list) else [data]
 
+    fold_metrics = []
     for fold_idx, fold_data in enumerate(fold_data_list, start=1):
         if len(fold_data_list) > 1:
             logger.log('cv_fold', fold_idx)
@@ -76,5 +79,31 @@ def start_pipeline(config_file, data_map, preprocessor_map, model_map, trainer_m
         else:
             model_tracker.reset_tracker()
 
-        logger_filename = config_copy.get("log_filename", "default_log.csv")
-        logger.save(logger_filename)
+        if len(fold_data_list) > 1:
+            split_name = None
+            if fold_data.get('test_loader') is not None:
+                split_name = 'test'
+            elif fold_data.get('val_loader') is not None:
+                split_name = 'val'
+            if split_name:
+                entry = logger.build_entry_dict()
+                metrics = {}
+                for metric in ('accuracy', 'precision', 'recall', 'f1', 'auc'):
+                    key = f'{split_name}_{metric}'
+                    if key in entry:
+                        metrics[metric] = entry[key]
+                if metrics:
+                    fold_metrics.append((split_name, metrics))
+
+    if fold_metrics:
+        split_name = fold_metrics[0][0]
+        print(f"\nCross-validation summary ({split_name}):")
+        for metric in ('accuracy', 'precision', 'recall', 'f1', 'auc'):
+            values = [m.get(metric) for _, m in fold_metrics if m.get(metric) is not None]
+            if values:
+                avg_value = float(np.mean(values))
+                logger.log(f'cv_avg_{split_name}_{metric}', avg_value)
+                print(f"Mean {metric}: {avg_value:.4f}")
+
+    logger_filename = config_copy.get("log_filename", "default_log.csv")
+    logger.save(logger_filename)

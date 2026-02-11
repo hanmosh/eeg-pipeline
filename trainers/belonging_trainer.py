@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torch import nn, optim
 from tqdm import tqdm
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_curve, confusion_matrix
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_curve, roc_auc_score, confusion_matrix
 
 from utils.log import logger, model_tracker
 
@@ -379,15 +379,23 @@ class BelongingTrainer:
             accuracy = accuracy_score(participant_labels, participant_preds)
             precision, recall, f1, _avg = self._compute_prf(participant_labels, participant_preds)
             cm = confusion_matrix(participant_labels, participant_preds)
+            auc = None
+            if participant_probs.shape[1] == 2 and len(np.unique(participant_labels)) == 2:
+                auc = roc_auc_score(participant_labels, participant_probs[:, 1])
         else:
             accuracy = accuracy_score(test_labels, test_preds)
             precision, recall, f1, _avg = self._compute_prf(test_labels, test_preds)
             cm = confusion_matrix(test_labels, test_preds)
+            auc = None
+            if test_probs.ndim == 2 and test_probs.shape[1] == 2 and len(np.unique(test_labels)) == 2:
+                auc = roc_auc_score(test_labels, test_probs[:, 1])
 
         logger.log(f'{split_name}_accuracy', accuracy)
         logger.log(f'{split_name}_precision', precision)
         logger.log(f'{split_name}_recall', recall)
         logger.log(f'{split_name}_f1', f1)
+        if auc is not None:
+            logger.log(f'{split_name}_auc', auc)
 
         print(f"\n{split_name.capitalize()} Set Results:")
         if use_participant_level:
@@ -398,14 +406,15 @@ class BelongingTrainer:
         print(f"Precision: {precision:.4f}")
         print(f"Recall: {recall:.4f}")
         print(f"F1 Score: {f1:.4f}")
+        if auc is not None:
+            print(f"AUC: {auc:.4f}")
         print(f"\nConfusion Matrix:")
         print(cm)
 
-        if split_name == 'test':
-            if use_participant_level and participant_probs.shape[1] == 2:
-                self._plot_roc_curve(participant_labels, participant_probs[:, 1], split_name=split_name)
-            elif (not use_participant_level) and test_probs.ndim == 2 and test_probs.shape[1] == 2:
-                self._plot_roc_curve(test_labels, test_probs[:, 1], split_name=split_name)
+        if use_participant_level and participant_probs.shape[1] == 2:
+            self._plot_roc_curve(participant_labels, participant_probs[:, 1], split_name=split_name)
+        elif (not use_participant_level) and test_probs.ndim == 2 and test_probs.shape[1] == 2:
+            self._plot_roc_curve(test_labels, test_probs[:, 1], split_name=split_name)
         if use_participant_level:
             self._print_participant_table(split_name, participant_ids, participant_labels, participant_probs)
 
