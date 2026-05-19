@@ -6,20 +6,19 @@ import os
 from copy import deepcopy
 
 from utils.lib_pipe import run_config
-from dataset_retrievers.spectrogram_retriever import load_belonging_spectrograms
 from dataset_retrievers.tfrecord_retriever import load_belonging_tfrecords
-from preprocessors.spectrogram_processor import spectrogram_preprocessor
+from dataset_retrievers.tfrecord_multimodal_retriever import load_belonging_multimodal_tfrecords
 from preprocessors.tfrecord_processor import tfrecord_preprocessor
 from architectures.chrononet import ChronoNet
 from trainers.belonging_trainer import BelongingTrainer
+from trainers.belonging_multimodal_trainer import BelongingMultimodalTrainer
 
 
 DATA_MAP = {
-    "load_belonging_spectrograms": load_belonging_spectrograms,
     "load_belonging_tfrecords": load_belonging_tfrecords,
+    "load_belonging_multimodal_tfrecords": load_belonging_multimodal_tfrecords,
 }
 PREPROCESSOR_MAP = {
-    "spectrogram_preprocessor": spectrogram_preprocessor,
     "tfrecord_preprocessor": tfrecord_preprocessor,
 }
 MODEL_MAP = {
@@ -27,6 +26,7 @@ MODEL_MAP = {
 }
 TRAINER_MAP = {
     "BelongingTrainer": BelongingTrainer,
+    "BelongingMultimodalTrainer": BelongingMultimodalTrainer,
 }
 
 
@@ -109,9 +109,13 @@ def _save_state(path, state):
 def main():
     parser = argparse.ArgumentParser(description="Grid search for pipeline configs")
     parser.add_argument("config_file", nargs="?", default="belonging_config_chrononet_tfrecord.json")
+    parser.add_argument("-m", "--models", action="store_true", help="Save model artifacts and plots per trial")
     args = parser.parse_args()
 
     base_config, config_path = _load_config(args.config_file)
+    dataset_params = base_config.get("dataset_params", {})
+    question_mode = dataset_params.get("question_mode", dataset_params.get("question_group", "cognitive"))
+    print(f"Question mode: {question_mode}")
     grid_search = base_config.get("grid_search")
     if not grid_search:
         raise ValueError("Config must include a 'grid_search' section.")
@@ -180,7 +184,7 @@ def main():
             PREPROCESSOR_MAP,
             MODEL_MAP,
             TRAINER_MAP,
-            save_model=False,
+            save_model=args.models,
             log_filename_override=log_filename,
             clear_logger=True,
         )

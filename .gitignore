@@ -1,5 +1,7 @@
 models/
 logs/
+.venv/
+__pycache__/
 
 scalogram-data/
 .venv312/

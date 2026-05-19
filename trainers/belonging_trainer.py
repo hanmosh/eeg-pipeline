@@ -207,6 +207,9 @@ class BelongingTrainer:
         learning_rate = self.trainer_params.get('learning_rate', 1e-3)
         weight_decay = self.trainer_params.get('weight_decay', 1e-4)
         patience = self.trainer_params.get('patience', 10)
+        use_validation_during_training = bool(
+            self.trainer_params.get('use_validation_during_training', True)
+        )
 
         train_labels = np.array(self.data['train_loader'].dataset.labels, dtype=int)
         class_counts = np.bincount(train_labels)
@@ -232,7 +235,7 @@ class BelongingTrainer:
             )
 
         train_loader = self.data['train_loader']
-        val_loader = self.data['val_loader']
+        val_loader = self.data['val_loader'] if use_validation_during_training else None
 
         best_val_loss = float('inf')
         best_model_state = None
@@ -297,8 +300,11 @@ class BelongingTrainer:
             model_tracker.track_metric('train_f1', train_f1)
 
             if val_loader is not None:
-                val_loss, val_accuracy, val_precision, val_recall, val_f1, val_avg, val_metric_level = self.validate(
-                    val_loader, criterion
+                val_loss, val_accuracy, val_precision, val_recall, val_f1, val_avg, val_metric_level, _ = self.validate(
+                    val_loader,
+                    criterion,
+                    log_threshold_key='epoch_val_threshold',
+                    store_tuned_threshold=False,
                 )
                 model_tracker.track_metric('val_loss', val_loss)
                 model_tracker.track_metric('val_accuracy', val_accuracy)
@@ -336,6 +342,26 @@ class BelongingTrainer:
             self.model.load_state_dict(best_model_state)
             print("Restored best model from validation")
 
+        # Tune threshold once on the restored best model so test uses a consistent threshold.
+        if val_loader is not None and self.threshold_strategy:
+            (
+                _val_loss_final,
+                _val_acc_final,
+                _val_precision_final,
+                _val_recall_final,
+                _val_f1_final,
+                _val_avg_final,
+                _val_metric_level_final,
+                final_tuned_threshold,
+            ) = self.validate(
+                val_loader,
+                criterion,
+                log_threshold_key='final_val_threshold',
+                store_tuned_threshold=True,
+            )
+            if final_tuned_threshold is not None:
+                logger.log('final_threshold_used', final_tuned_threshold)
+
         logger.log('final_train_loss', avg_train_loss)
         logger.log('final_train_accuracy', train_accuracy)
         if val_loader is not None:
@@ -343,7 +369,7 @@ class BelongingTrainer:
 
         return self.model
 
-    def validate(self, val_loader, criterion):
+    def validate(self, val_loader, criterion, log_threshold_key=None, store_tuned_threshold=True):
         self.model.eval()
         val_losses = []
         val_preds = []
@@ -390,8 +416,10 @@ class BelongingTrainer:
         if self.threshold_strategy:
             tuned_threshold = self._select_threshold(val_labels_for_metrics, val_probs_for_metrics)
             if tuned_threshold is not None:
-                self.tuned_threshold = tuned_threshold
-                logger.log('val_threshold', tuned_threshold)
+                if store_tuned_threshold:
+                    self.tuned_threshold = tuned_threshold
+                if log_threshold_key:
+                    logger.log(log_threshold_key, tuned_threshold)
 
         val_preds_for_metrics = self._predict_from_probs(val_probs_for_metrics, threshold=tuned_threshold)
 
@@ -399,7 +427,16 @@ class BelongingTrainer:
         val_precision, val_recall, val_f1, val_avg = self._compute_prf(
             val_labels_for_metrics, val_preds_for_metrics
         )
-        return avg_val_loss, val_accuracy, val_precision, val_recall, val_f1, val_avg, val_metric_level
+        return (
+            avg_val_loss,
+            val_accuracy,
+            val_precision,
+            val_recall,
+            val_f1,
+            val_avg,
+            val_metric_level,
+            tuned_threshold,
+        )
 
     def evaluate(self, test_loader, split_name='test'):
         self.model.eval()
@@ -455,6 +492,11 @@ class BelongingTrainer:
             tuned_threshold = self.tuned_threshold
 
         preds_for_metrics = self._predict_from_probs(probs_for_metrics, threshold=tuned_threshold)
+        threshold_used = None
+        if probs_for_metrics.ndim == 2 and probs_for_metrics.shape[1] == 2:
+            threshold_used = tuned_threshold if tuned_threshold is not None else self.decision_threshold
+            if threshold_used is not None:
+                logger.log(f'{split_name}_threshold_used', threshold_used)
         accuracy = accuracy_score(labels_for_metrics, preds_for_metrics)
         precision, recall, f1, _avg = self._compute_prf(labels_for_metrics, preds_for_metrics)
         cm = confusion_matrix(labels_for_metrics, preds_for_metrics)

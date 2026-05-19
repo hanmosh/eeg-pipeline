@@ -1,17 +1,22 @@
 {
-    "id": "belonging_prediction_chrononet_tfrecord_v1",
-    "log_filename": "belonging_results.csv",
+    "id": "belonging_prediction_multimodal_tfrecord_v1",
+    "log_filename": "belonging_multimodal_results.csv",
     "seed": 42,
     "deterministic": true,
     "label_sweep": {
         "enabled": true,
         "label_types": ["specific", "composite", "factor", "weighted"]
     },
+    "seed_sweep": {
+        "enabled": false,
+        "seeds": [13, 42, 77]
+    },
     "dataset_params": {
-        "name": "load_belonging_tfrecords",
+        "name": "load_belonging_multimodal_tfrecords",
         "tfrecords_dir": "D:\\merged\\cleaned\\merged_clean_tfrecords",
         "labels_csv": "specific",
         "labels_lookup_csv": "data/belonging/andrews_40_subjects/AllNLPData.csv",
+        "nlp_csv": "data/belonging/andrews_40_subjects/AllNLPData.csv",
         "question_mode": "non cognitive",
         "max_windows_per_question": 23,
         "channels": ["TP9", "AF7", "AF8", "TP10"]
@@ -41,21 +46,16 @@
         "truncate_bptt": 64
     },
     "trainer_params": {
-        "name": "BelongingTrainer",
+        "name": "BelongingMultimodalTrainer",
         "num_epochs": 20,
         "learning_rate": 0.0003,
         "weight_decay": 0.0001,
         "patience": 5,
         "decision_threshold": 0.5,
         "threshold_strategy": null,
-        "use_validation_during_training": false
-    },
-    "grid_search": {
-        "metric": "accuracy",
-        "params": {
-            "trainer_params.learning_rate": [0.001, 0.0003],
-            "model_params.dropout_rate": [0.2, 0.4],
-            "model_params.gru_hidden_size": [16, 32]
-        }
+        "use_validation_during_training": false,
+        "survey_weight": 0.7,
+        "fusion_threshold": 0.5,
+        "survey_seed": 42
     }
 }
