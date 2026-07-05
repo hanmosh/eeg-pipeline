@@ -94,24 +94,49 @@ def _format_label_folder_name(raw_label):
     return safe_label or "Run"
 
 
+def _format_run_family_folder_name(config):
+    trainer_name = str(config.get("trainer_params", {}).get("name", "")).strip().lower()
+    dataset_name = str(config.get("dataset_params", {}).get("name", "")).strip().lower()
+    if "multimodal" in trainer_name or "multimodal" in dataset_name:
+        return "multimodal"
+    return "eeg_only"
+
+
+def _format_architecture_folder_name(config, model_name):
+    dataset_params = config.get("dataset_params", {})
+    eeg_loader_name = str(
+        dataset_params.get("eeg_loader_name", dataset_params.get("eeg_source", ""))
+    ).strip().lower()
+
+    is_raw = model_name.lower().startswith("raw") or eeg_loader_name in {"raw", "rawcsv", "raw_csv"}
+    prefix = "1D" if is_raw else "2D"
+    base_name = model_name[3:] if model_name.lower().startswith("raw") else model_name
+    return f"{prefix}_{base_name}"
+
+
 def _build_saved_model_folder_name(config, model_name, fold_data, fold_idx):
     dataset_params = config.get("dataset_params", {})
+    run_family = _format_run_family_folder_name(config)
+    architecture_name = _format_architecture_folder_name(config, model_name)
     label_name = _format_label_folder_name(dataset_params.get("labels_csv"))
 
     cv_fold = fold_data.get("cv_fold_in_repeat")
     cv_repeat = fold_data.get("cv_repeat_index")
     if cv_fold is not None:
         if cv_repeat is not None and int(cv_repeat) > 1:
-            return f"{label_name}_Repeat_{int(cv_repeat)}_CV_{int(cv_fold)}"
-        return f"{label_name}_CV_{int(cv_fold)}"
+            fold_folder = f"Repeat_{int(cv_repeat)}_CV_{int(cv_fold)}"
+        else:
+            fold_folder = f"CV_{int(cv_fold)}"
+        return os.path.join(run_family, architecture_name, label_name, fold_folder)
 
     if fold_data.get("cv_fold") is not None:
-        return f"{label_name}_CV_{int(fold_data['cv_fold'])}"
+        fold_folder = f"CV_{int(fold_data['cv_fold'])}"
+        return os.path.join(run_family, architecture_name, label_name, fold_folder)
 
     if dataset_params.get("labels_csv") is not None:
-        return label_name
+        return os.path.join(run_family, architecture_name, label_name, "Run")
 
-    return f"{model_name}_Run_{int(fold_idx)}"
+    return os.path.join(run_family, architecture_name, f"Run_{int(fold_idx)}")
 
 
 def _resolve_label_sweep_types(config):
@@ -291,6 +316,8 @@ def run_config(
         trained_model = trainer.run()
 
         model_tracker.set_model(trained_model)
+        if getattr(trainer, "survey_model", None) is not None:
+            model_tracker.set_auxiliary_artifact("survey_model", trainer.survey_model)
         if save_model:
             logger.log('model_save_path', model_tracker.get_model_info_save_path())
             model_tracker.save_model_details()
@@ -337,16 +364,18 @@ def run_config(
     return logger.build_entry_dict()
 
 
-def start_pipeline(config_file, data_map, preprocessor_map, model_map, trainer_map, save_model=False):
-    if not config_file.endswith('.json'):
-        raise ValueError("config_file must be a .json file")
-    if os.path.isabs(config_file) or os.path.exists(config_file):
-        config_path = config_file
-    else:
-        config_path = os.path.join('run_configs', config_file)
-
-    with open(config_path, 'r') as f:
-        config = json.load(f)
+def run_pipeline_config(
+    config,
+    data_map,
+    preprocessor_map,
+    model_map,
+    trainer_map,
+    save_model=False,
+    log_filename_override=None,
+):
+    config = deepcopy(config)
+    if log_filename_override:
+        config["log_filename"] = log_filename_override
 
     summary_branches = _resolve_summary_branches(config)
     sweep_types = _resolve_label_sweep_types(config)
@@ -458,6 +487,27 @@ def start_pipeline(config_file, data_map, preprocessor_map, model_map, trainer_m
         return {"label_sweep_results": sweep_rows}
 
     return run_config(
+        config,
+        data_map,
+        preprocessor_map,
+        model_map,
+        trainer_map,
+        save_model=save_model,
+    )
+
+
+def start_pipeline(config_file, data_map, preprocessor_map, model_map, trainer_map, save_model=False):
+    if not config_file.endswith('.json'):
+        raise ValueError("config_file must be a .json file")
+    if os.path.isabs(config_file) or os.path.exists(config_file):
+        config_path = config_file
+    else:
+        config_path = os.path.join('run_configs', config_file)
+
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+
+    return run_pipeline_config(
         config,
         data_map,
         preprocessor_map,

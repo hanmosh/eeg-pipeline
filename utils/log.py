@@ -4,6 +4,7 @@ import os
 import numpy as np
 from datetime import datetime
 import json
+import pickle
 from collections import OrderedDict
 
 class Logger:
@@ -93,6 +94,7 @@ class ModelTracker:
         self.config = None
         self.filepath = None
         self.save_model = False
+        self.auxiliary_artifacts = {}
 
     def set_model_name(self, name, save_model=False):
         """
@@ -130,6 +132,17 @@ class ModelTracker:
             None
         """
         self.config = config
+
+    def set_auxiliary_artifact(self, name, artifact):
+        """
+        Register an additional artifact to be saved alongside the main model.
+        Parameters:
+            name (str): Short artifact name such as 'survey_model'.
+            artifact: Serializable object to save.
+        Returns:
+            None
+        """
+        self.auxiliary_artifacts[name] = artifact
 
     def track_metric(self, metric_name, value):
         """
@@ -315,6 +328,7 @@ class ModelTracker:
         self.config = None
         self.filepath = None
         self.save_model = False
+        self.auxiliary_artifacts = {}
 
     def save_model_details(self):
         """
@@ -358,6 +372,30 @@ class ModelTracker:
             config_filepath = f'{self.filepath}config.json'
             with open(config_filepath, 'w') as f:
                 json.dump(self.config, f, indent=4)
+
+        try:
+            import torch
+
+            if hasattr(self.model, "state_dict"):
+                weights_filepath = f'{self.filepath}model_state_dict.pt'
+                torch.save(self.model.state_dict(), weights_filepath)
+        except Exception as exc:
+            with open(filepath, 'a') as f:
+                f.write(f"\nmodel_save_warning: {exc}\n")
+
+        if self.metrics:
+            metrics_filepath = f'{self.filepath}metrics.json'
+            serializable_metrics = {
+                metric_name: values if len(values) > 1 else values[0]
+                for metric_name, values in self.metrics.items()
+            }
+            with open(metrics_filepath, 'w') as f:
+                json.dump(serializable_metrics, f, indent=4)
+
+        for artifact_name, artifact in self.auxiliary_artifacts.items():
+            artifact_path = f'{self.filepath}{artifact_name}.pkl'
+            with open(artifact_path, 'wb') as f:
+                pickle.dump(artifact, f)
 
 
         # clear tracked metrics after saving

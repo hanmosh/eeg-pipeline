@@ -54,8 +54,10 @@
         "decision_threshold": 0.5,
         "threshold_strategy": null,
         "use_validation_during_training": false,
-        "survey_weight": 0.7,
+        "fusion_mode": "fixed_weight",
+        "survey_weight": 0.55,
         "fusion_threshold": 0.5,
+        "gated_confidence_margin": 0.0,
         "survey_seed": 42
     }
 }

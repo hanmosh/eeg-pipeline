@@ -1,3 +1,6 @@
+import csv
+import os
+
 import numpy as np
 import torch
 from sklearn.impute import SimpleImputer
@@ -32,6 +35,17 @@ class BelongingMultimodalTrainer(BelongingTrainer):
         if self.fusion_threshold < 0.0 or self.fusion_threshold > 1.0:
             raise ValueError("trainer_params.fusion_threshold must be between 0 and 1.")
 
+        fusion_mode = str(trainer_params.get("fusion_mode", "fixed_weight")).strip().lower()
+        if fusion_mode in {"fixed", "weighted"}:
+            fusion_mode = "fixed_weight"
+        if fusion_mode not in {"fixed_weight", "gated"}:
+            raise ValueError("trainer_params.fusion_mode must be 'fixed_weight' or 'gated'.")
+        self.fusion_mode = fusion_mode
+
+        self.gated_confidence_margin = float(trainer_params.get("gated_confidence_margin", 0.0))
+        if self.gated_confidence_margin < 0.0:
+            raise ValueError("trainer_params.gated_confidence_margin must be non-negative.")
+
         # Keep threshold behavior fixed to match pallavi_recreation.py.
         self.decision_threshold = self.fusion_threshold
         self.threshold_strategy = None
@@ -45,6 +59,155 @@ class BelongingMultimodalTrainer(BelongingTrainer):
                 "Use load_belonging_multimodal_tfrecords with this trainer."
             )
         self.survey_model = None
+
+    def _save_participant_predictions(
+        self,
+        split_name,
+        participant_ids,
+        labels,
+        eeg_probs,
+        survey_probs,
+        fused_scores,
+        eeg_preds,
+        survey_preds,
+        fused_preds,
+        fusion_sources,
+    ):
+        if len(participant_ids) == 0:
+            return
+
+        context = logger.build_entry_dict()
+        filepath = os.path.join("logs", "belonging_multimodal_participant_predictions_v2.csv")
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+        fieldnames = [
+            "timestamp",
+            "config_id",
+            "cv_fold",
+            "cv_folds",
+            "cv_fold_in_repeat",
+            "cv_repeat",
+            "cv_total_folds",
+            "split_name",
+            "question_mode",
+            "label_source",
+            "survey_label_col",
+            "eeg_loader_name",
+            "fusion_mode",
+            "survey_weight",
+            "fusion_threshold",
+            "participant",
+            "label",
+            "eeg_prob",
+            "eeg_pred",
+            "survey_prob",
+            "survey_pred",
+            "fusion_prob",
+            "fusion_pred",
+            "fusion_decision_source",
+            "eeg_correct",
+            "survey_correct",
+            "fusion_correct",
+            "eeg_rescues_survey",
+            "fusion_rescues_survey",
+            "fusion_hurts_survey",
+        ]
+
+        file_exists = os.path.exists(filepath)
+        with open(filepath, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+
+            for pid, label, eeg_prob, survey_prob, fusion_prob, eeg_pred, survey_pred, fusion_pred, fusion_source in zip(
+                participant_ids,
+                labels,
+                eeg_probs[:, 1],
+                survey_probs[:, 1],
+                fused_scores,
+                eeg_preds,
+                survey_preds,
+                fused_preds,
+                fusion_sources,
+            ):
+                eeg_correct = int(eeg_pred == label)
+                survey_correct = int(survey_pred == label)
+                fusion_correct = int(fusion_pred == label)
+                writer.writerow(
+                    {
+                        "timestamp": context.get("timestamp"),
+                        "config_id": context.get("config_id"),
+                        "cv_fold": context.get("cv_fold"),
+                        "cv_folds": context.get("cv_folds"),
+                        "cv_fold_in_repeat": context.get("cv_fold_in_repeat"),
+                        "cv_repeat": context.get("cv_repeat"),
+                        "cv_total_folds": context.get("cv_total_folds"),
+                        "split_name": split_name,
+                        "question_mode": context.get("question_mode"),
+                        "label_source": context.get("label_source"),
+                        "survey_label_col": context.get("survey_label_col"),
+                        "eeg_loader_name": context.get("eeg_loader_name"),
+                        "fusion_mode": self.fusion_mode,
+                        "survey_weight": self.survey_weight,
+                        "fusion_threshold": self.fusion_threshold,
+                        "participant": pid,
+                        "label": int(label),
+                        "eeg_prob": float(eeg_prob),
+                        "eeg_pred": int(eeg_pred),
+                        "survey_prob": float(survey_prob),
+                        "survey_pred": int(survey_pred),
+                        "fusion_prob": float(fusion_prob),
+                        "fusion_pred": int(fusion_pred),
+                        "fusion_decision_source": fusion_source,
+                        "eeg_correct": eeg_correct,
+                        "survey_correct": survey_correct,
+                        "fusion_correct": fusion_correct,
+                        "eeg_rescues_survey": int((not survey_correct) and eeg_correct),
+                        "fusion_rescues_survey": int((not survey_correct) and fusion_correct),
+                        "fusion_hurts_survey": int(survey_correct and (not fusion_correct)),
+                    }
+                )
+
+    def _print_rescue_summary(self, labels, eeg_preds, survey_preds, fused_preds):
+        survey_wrong = survey_preds != labels
+        survey_mistakes = int(np.sum(survey_wrong))
+        eeg_rescues = int(np.sum(survey_wrong & (eeg_preds == labels)))
+        fusion_rescues = int(np.sum(survey_wrong & (fused_preds == labels)))
+        fusion_hurts = int(np.sum((survey_preds == labels) & (fused_preds != labels)))
+
+        print("\nSurvey Rescue Summary:")
+        print(f"Survey mistakes: {survey_mistakes}")
+        print(f"EEG alone rescues: {eeg_rescues}")
+        print(f"Fusion rescues: {fusion_rescues}")
+        print(f"Fusion hurts correct survey decisions: {fusion_hurts}")
+
+    def _compute_fused_outputs(self, survey_probs, eeg_probs, survey_preds, eeg_preds):
+        base_scores = (
+            self.survey_weight * survey_probs[:, 1]
+            + (1.0 - self.survey_weight) * eeg_probs[:, 1]
+        )
+
+        if self.fusion_mode == "fixed_weight":
+            fused_scores = base_scores
+            fusion_sources = np.full((len(base_scores),), "fixed_weight", dtype=object)
+            return fused_scores, (fused_scores >= self.fusion_threshold).astype(int), fusion_sources
+
+        fused_scores = base_scores.copy()
+        fusion_sources = np.full((len(base_scores),), "blend", dtype=object)
+
+        survey_conf = np.abs(survey_probs[:, 1] - self.fusion_threshold)
+        eeg_conf = np.abs(eeg_probs[:, 1] - self.fusion_threshold)
+        disagree = survey_preds != eeg_preds
+        use_eeg = disagree & (eeg_conf >= (survey_conf + self.gated_confidence_margin))
+        use_survey = disagree & ~use_eeg
+
+        fused_scores[use_eeg] = eeg_probs[use_eeg, 1]
+        fused_scores[use_survey] = survey_probs[use_survey, 1]
+        fusion_sources[use_eeg] = "eeg"
+        fusion_sources[use_survey] = "survey"
+
+        fused_preds = (fused_scores >= self.fusion_threshold).astype(int)
+        return fused_scores, fused_preds, fusion_sources
 
     def run(self):
         trained_model = self.train()
@@ -184,14 +347,15 @@ class BelongingMultimodalTrainer(BelongingTrainer):
         labels, eeg_probs, participant_ids = self._collect_eeg_participant_outputs(data_loader)
         survey_probs = self._get_survey_probs(participant_ids)
 
+        logger.log(f"{split_name}_fusion_mode", self.fusion_mode)
+        logger.log(f"{split_name}_gated_confidence_margin", self.gated_confidence_margin)
+
         eeg_preds = (eeg_probs[:, 1] >= self.fusion_threshold).astype(int)
         survey_preds = (survey_probs[:, 1] >= self.fusion_threshold).astype(int)
 
-        fused_scores = (
-            self.survey_weight * survey_probs[:, 1]
-            + (1.0 - self.survey_weight) * eeg_probs[:, 1]
+        fused_scores, fused_preds, fusion_sources = self._compute_fused_outputs(
+            survey_probs, eeg_probs, survey_preds, eeg_preds
         )
-        fused_preds = (fused_scores >= self.fusion_threshold).astype(int)
 
         eeg_accuracy = accuracy_score(labels, eeg_preds)
         eeg_precision, eeg_recall, eeg_f1, _ = self._compute_prf(labels, eeg_preds)
@@ -218,8 +382,16 @@ class BelongingMultimodalTrainer(BelongingTrainer):
         logger.log(f"{split_name}_survey_weight", self.survey_weight)
 
         print(f"\n{split_name.capitalize()} Set Results (Multimodal):")
+        print(f"Fusion mode: {self.fusion_mode}")
         print(f"Survey weight: {self.survey_weight:.3f}, EEG weight: {1.0 - self.survey_weight:.3f}")
         print(f"Threshold: {self.fusion_threshold:.3f}")
+        if self.fusion_mode == "gated":
+            print(f"Gated confidence margin: {self.gated_confidence_margin:.3f}")
+            print(
+                f"Fusion decisions -> blend: {int(np.sum(fusion_sources == 'blend'))}, "
+                f"survey: {int(np.sum(fusion_sources == 'survey'))}, "
+                f"eeg: {int(np.sum(fusion_sources == 'eeg'))}"
+            )
         print(
             f"EEG      -> Acc: {eeg_accuracy:.4f}, P/R/F1: "
             f"{eeg_precision:.4f}/{eeg_recall:.4f}/{eeg_f1:.4f}"
@@ -235,8 +407,22 @@ class BelongingMultimodalTrainer(BelongingTrainer):
             f"{fusion_precision:.4f}/{fusion_recall:.4f}/{fusion_f1:.4f}"
             + (f", AUC: {fusion_auc:.4f}" if fusion_auc is not None else "")
         )
+        self._print_rescue_summary(labels, eeg_preds, survey_preds, fused_preds)
         print("\nFusion Confusion Matrix:")
         print(confusion_matrix(labels, fused_preds))
+
+        self._save_participant_predictions(
+            split_name,
+            participant_ids,
+            labels,
+            eeg_probs,
+            survey_probs,
+            fused_scores,
+            eeg_preds,
+            survey_preds,
+            fused_preds,
+            fusion_sources,
+        )
 
         if fusion_auc is not None:
             self._plot_roc_curve(labels, fused_scores, split_name=split_name)

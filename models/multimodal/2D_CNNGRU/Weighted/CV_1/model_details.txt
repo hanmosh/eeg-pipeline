@@ -1,0 +1,97 @@
+Model Name: multimodal\2D_CNNGRU\Weighted\CV_1
+Model Details:
+CNNGRU(
+  (encoder): Sequential(
+    (0): Conv2d(4, 8, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+    (1): BatchNorm2d(8, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    (2): ReLU()
+    (3): MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
+    (4): Conv2d(8, 16, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+    (5): BatchNorm2d(16, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    (6): ReLU()
+    (7): MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
+  )
+  (pool): AdaptiveAvgPool2d(output_size=(1, 1))
+  (proj): Linear(in_features=16, out_features=8, bias=True)
+  (dropout): Dropout(p=0.2, inplace=False)
+  (temporal_gru): GRU(8, 8, batch_first=True)
+  (fc): Linear(in_features=8, out_features=2, bias=True)
+)
+
+Configuration:
+{
+    "id": "belonging_prediction_multimodal_cnn_gru_tfrecord_v1_best_training_weighted",
+    "log_filename": "belonging_multimodal_results.csv",
+    "seed": 42,
+    "deterministic": true,
+    "label_sweep": {
+        "enabled": true,
+        "label_types": [
+            "specific",
+            "composite",
+            "factor",
+            "weighted"
+        ]
+    },
+    "dataset_params": {
+        "name": "load_belonging_multimodal_tfrecords",
+        "tfrecords_dir": "D:\\merged\\cleaned\\merged_clean_tfrecords",
+        "labels_csv": "weighted",
+        "labels_lookup_csv": "data/belonging/andrews_40_subjects/AllNLPData.csv",
+        "nlp_csv": "data/belonging/andrews_40_subjects/AllNLPData.csv",
+        "question_mode": "non cognitive",
+        "max_windows_per_question": 23,
+        "channels": [
+            "TP9",
+            "AF7",
+            "AF8",
+            "TP10"
+        ]
+    },
+    "preprocessor_params": {
+        "name": "tfrecord_preprocessor",
+        "test_split": 0.0,
+        "val_split": 0.0,
+        "batch_size": 1,
+        "cv_folds": 5,
+        "fold_manifest_csv": "data/belonging/andrews_40_subjects/final_results_paper_cv_manifest.csv",
+        "cv_fold_as_test": true,
+        "downsample_train": false,
+        "max_windows_per_person": null,
+        "seed": 42
+    },
+    "model_params": {
+        "name": "CNNGRU",
+        "conv_filters": 8,
+        "num_blocks": 2,
+        "gru_hidden_size": 8,
+        "dropout_rate": 0.2,
+        "use_batch_norm": true,
+        "window_batch_size": 8
+    },
+    "trainer_params": {
+        "name": "BelongingMultimodalTrainer",
+        "num_epochs": 20,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "patience": 5,
+        "decision_threshold": 0.5,
+        "threshold_strategy": null,
+        "use_validation_during_training": false,
+        "fusion_mode": "fixed_weight",
+        "survey_weight": 0.55,
+        "fusion_threshold": 0.5,
+        "gated_confidence_margin": 0.0,
+        "survey_seed": 42
+    }
+}
+
+
+Tracked Metrics:
+train_loss: [np.float64(0.6972755771130323), np.float64(0.686743501573801), np.float64(0.7002116311341524), np.float64(0.690340043976903), np.float64(0.6960900668054819), np.float64(0.6870802640914917), np.float64(0.6832889299839735), np.float64(0.6957960557192564), np.float64(0.6805551256984472), np.float64(0.6793014146387577), np.float64(0.6831740196794271), np.float64(0.6561212986707687), np.float64(0.668233634904027), np.float64(0.6641825344413519), np.float64(0.6733077745884657), np.float64(0.679298521950841), np.float64(0.6267846217378974), np.float64(0.6278203520923853), np.float64(0.606817789375782), np.float64(0.6149111744016409)]
+train_accuracy: [0.5, 0.5625, 0.5, 0.59375, 0.53125, 0.625, 0.53125, 0.4375, 0.59375, 0.59375, 0.625, 0.75, 0.59375, 0.65625, 0.53125, 0.53125, 0.8125, 0.75, 0.78125, 0.78125]
+train_precision: [0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.6, 0.4, 0.6666666666666666, 0.5652173913043478, 0.6111111111111112, 0.75, 0.5714285714285714, 0.7777777777777778, 0.5294117647058824, 0.5384615384615384, 1.0, 0.8333333333333334, 0.7368421052631579, 0.8461538461538461]
+train_recall: [0.0, 0.125, 0.0, 0.1875, 0.0625, 0.25, 0.1875, 0.25, 0.375, 0.8125, 0.6875, 0.75, 0.75, 0.4375, 0.5625, 0.4375, 0.625, 0.625, 0.875, 0.6875]
+train_f1: [0.0, 0.2222222222222222, 0.0, 0.3157894736842105, 0.11764705882352941, 0.4, 0.2857142857142857, 0.3076923076923077, 0.48, 0.6666666666666666, 0.6470588235294118, 0.75, 0.6486486486486487, 0.56, 0.5454545454545454, 0.4827586206896552, 0.7692307692307693, 0.7142857142857143, 0.8, 0.7586206896551724]
+
+Saved on: 2026-07-04 12:39:44

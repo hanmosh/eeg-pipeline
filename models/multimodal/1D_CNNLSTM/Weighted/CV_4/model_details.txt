@@ -1,0 +1,100 @@
+Model Name: multimodal\1D_CNNLSTM\Weighted\CV_4
+Model Details:
+RawCNNLSTM(
+  (encoder): Sequential(
+    (0): Conv1d(4, 8, kernel_size=(7,), stride=(1,), padding=(3,))
+    (1): BatchNorm1d(8, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    (2): ReLU()
+    (3): MaxPool1d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
+    (4): Conv1d(8, 16, kernel_size=(7,), stride=(1,), padding=(3,))
+    (5): BatchNorm1d(16, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    (6): ReLU()
+    (7): MaxPool1d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
+  )
+  (pool): AdaptiveAvgPool1d(output_size=1)
+  (proj): Linear(in_features=16, out_features=32, bias=True)
+  (dropout): Dropout(p=0.4, inplace=False)
+  (temporal_lstm): LSTM(32, 32, batch_first=True)
+  (fc): Linear(in_features=32, out_features=2, bias=True)
+)
+
+Configuration:
+{
+    "id": "belonging_prediction_multimodal_raw_cnn_lstm_csv_v1_best_training_weighted",
+    "log_filename": "belonging_multimodal_results.csv",
+    "seed": 42,
+    "deterministic": true,
+    "label_sweep": {
+        "enabled": true,
+        "label_types": [
+            "specific",
+            "composite",
+            "factor",
+            "weighted"
+        ]
+    },
+    "dataset_params": {
+        "name": "load_belonging_multimodal",
+        "eeg_loader_name": "raw_csv",
+        "raw_data_dir": "D:\\Cal-Poly-EEG-Data\\cleaned_v3",
+        "labels_csv": "weighted",
+        "labels_lookup_csv": "data/belonging/andrews_40_subjects/AllNLPData.csv",
+        "nlp_csv": "data/belonging/andrews_40_subjects/AllNLPData.csv",
+        "question_mode": "non cognitive",
+        "max_windows_per_question": 23,
+        "samples_per_window": 256,
+        "window_stride": 128,
+        "channels": [
+            "TP9",
+            "AF7",
+            "AF8",
+            "TP10"
+        ]
+    },
+    "preprocessor_params": {
+        "name": "sequence_preprocessor",
+        "test_split": 0.0,
+        "val_split": 0.0,
+        "batch_size": 1,
+        "cv_folds": 5,
+        "fold_manifest_csv": "data/belonging/andrews_40_subjects/final_results_paper_cv_manifest.csv",
+        "cv_fold_as_test": true,
+        "downsample_train": false,
+        "max_windows_per_person": null,
+        "seed": 42
+    },
+    "model_params": {
+        "name": "RawCNNLSTM",
+        "conv_filters": 8,
+        "num_blocks": 2,
+        "lstm_hidden_size": 32,
+        "dropout_rate": 0.4,
+        "use_batch_norm": true,
+        "window_batch_size": 32
+    },
+    "trainer_params": {
+        "name": "BelongingMultimodalTrainer",
+        "num_epochs": 20,
+        "learning_rate": 0.0001,
+        "weight_decay": 0.0001,
+        "patience": 5,
+        "decision_threshold": 0.5,
+        "threshold_strategy": null,
+        "use_validation_during_training": false,
+        "fusion_mode": "fixed_weight",
+        "survey_weight": 0.55,
+        "fusion_threshold": 0.5,
+        "gated_confidence_margin": 0.0,
+        "survey_seed": 42
+    }
+}
+
+
+Tracked Metrics:
+train_loss: [np.float64(0.6939028985798359), np.float64(0.695477114059031), np.float64(0.6984805706888437), np.float64(0.6989071853458881), np.float64(0.7128943968564272), np.float64(0.6855729836970568), np.float64(0.7033607810735703), np.float64(0.6922460701316595), np.float64(0.6916029173880816), np.float64(0.6985510196536779), np.float64(0.6794999931007624), np.float64(0.7069431059062481), np.float64(0.6646619569510221), np.float64(0.668544190004468), np.float64(0.6938314381986856), np.float64(0.6581296846270561), np.float64(0.6748396139591932), np.float64(0.6754184551537037), np.float64(0.685576843097806), np.float64(0.6816550083458424)]
+train_accuracy: [0.5, 0.5, 0.5, 0.5, 0.53125, 0.53125, 0.5, 0.5, 0.5, 0.46875, 0.59375, 0.4375, 0.625, 0.625, 0.53125, 0.625, 0.625, 0.625, 0.5625, 0.5]
+train_precision: [0.5, 0.5, 0.5, 0.5, 0.5161290322580645, 0.5172413793103449, 0.5, 0.5, 0.5, 0.4827586206896552, 0.5555555555555556, 0.46153846153846156, 0.5833333333333334, 0.6, 0.52, 0.5909090909090909, 0.5833333333333334, 0.5833333333333334, 0.5454545454545454, 0.5]
+train_recall: [1.0, 1.0, 1.0, 1.0, 1.0, 0.9375, 0.9375, 1.0, 0.9375, 0.875, 0.9375, 0.75, 0.875, 0.75, 0.8125, 0.8125, 0.875, 0.875, 0.75, 0.5625]
+train_f1: [0.6666666666666666, 0.6666666666666666, 0.6666666666666666, 0.6666666666666666, 0.6808510638297872, 0.6666666666666666, 0.6521739130434783, 0.6666666666666666, 0.6521739130434783, 0.6222222222222222, 0.6976744186046512, 0.5714285714285714, 0.7, 0.6666666666666666, 0.6341463414634146, 0.6842105263157895, 0.7, 0.7, 0.631578947368421, 0.5294117647058824]
+
+Saved on: 2026-07-04 16:17:28

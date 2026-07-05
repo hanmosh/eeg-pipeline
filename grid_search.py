@@ -5,24 +5,43 @@ import json
 import os
 from copy import deepcopy
 
-from utils.lib_pipe import run_config
+from utils.lib_pipe import run_pipeline_config
 from dataset_retrievers.tfrecord_retriever import load_belonging_tfrecords
-from dataset_retrievers.tfrecord_multimodal_retriever import load_belonging_multimodal_tfrecords
+from dataset_retrievers.raw_csv_retriever import load_belonging_raw_csvs
+from dataset_retrievers.tfrecord_multimodal_retriever import (
+    load_belonging_multimodal,
+    load_belonging_multimodal_raw_csvs,
+    load_belonging_multimodal_tfrecords,
+)
 from preprocessors.tfrecord_processor import tfrecord_preprocessor
 from architectures.chrononet import ChronoNet
+from architectures.cnn_gru import CNNGRU
+from architectures.cnn_lstm import CNNLSTM
+from architectures.raw_cnn_gru import RawCNNGRU
+from architectures.raw_cnn_lstm import RawCNNLSTM
+from architectures.raw_chrononet import RawChronoNet
 from trainers.belonging_trainer import BelongingTrainer
 from trainers.belonging_multimodal_trainer import BelongingMultimodalTrainer
 
 
 DATA_MAP = {
     "load_belonging_tfrecords": load_belonging_tfrecords,
+    "load_belonging_raw_csvs": load_belonging_raw_csvs,
+    "load_belonging_multimodal": load_belonging_multimodal,
+    "load_belonging_multimodal_raw_csvs": load_belonging_multimodal_raw_csvs,
     "load_belonging_multimodal_tfrecords": load_belonging_multimodal_tfrecords,
 }
 PREPROCESSOR_MAP = {
     "tfrecord_preprocessor": tfrecord_preprocessor,
+    "sequence_preprocessor": tfrecord_preprocessor,
 }
 MODEL_MAP = {
     "ChronoNet": ChronoNet,
+    "CNNGRU": CNNGRU,
+    "CNNLSTM": CNNLSTM,
+    "RawCNNGRU": RawCNNGRU,
+    "RawCNNLSTM": RawCNNLSTM,
+    "RawChronoNet": RawChronoNet,
 }
 TRAINER_MAP = {
     "BelongingTrainer": BelongingTrainer,
@@ -42,20 +61,6 @@ def _set_by_path(config, path, value):
     cursor[parts[-1]] = value
 
 
-def _extract_metric(entry, metric):
-    candidates = [
-        f"cv_avg_val_{metric}",
-        f"cv_avg_test_{metric}",
-        f"val_{metric}",
-        f"test_{metric}",
-        f"train_{metric}",
-    ]
-    for key in candidates:
-        if key in entry:
-            return key, entry[key]
-    return None, None
-
-
 def _load_config(config_file):
     if not config_file.endswith(".json"):
         raise ValueError("config_file must be a .json file")
@@ -67,11 +72,15 @@ def _load_config(config_file):
         return json.load(f), config_path
 
 
-def _grid_signature(config_path, metric, params, max_trials):
+def _grid_signature(config_path, base_config, metric, params, trials, max_trials):
+    config_snapshot = deepcopy(base_config)
+    config_snapshot.pop("grid_search", None)
     payload = {
         "config_path": os.path.abspath(config_path),
+        "config_snapshot": config_snapshot,
         "metric": metric,
         "params": params,
+        "trials": trials,
         "max_trials": max_trials,
     }
     encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
@@ -106,34 +115,88 @@ def _save_state(path, state):
         json.dump(state, f, indent=2)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Grid search for pipeline configs")
-    parser.add_argument("config_file", nargs="?", default="belonging_config_chrononet_tfrecord.json")
-    parser.add_argument("-m", "--models", action="store_true", help="Save model artifacts and plots per trial")
-    args = parser.parse_args()
+def _extract_metric(entry, metric):
+    if metric in entry and entry[metric] is not None:
+        return metric, entry[metric]
 
-    base_config, config_path = _load_config(args.config_file)
-    dataset_params = base_config.get("dataset_params", {})
-    question_mode = dataset_params.get("question_mode", dataset_params.get("question_group", "cognitive"))
-    print(f"Question mode: {question_mode}")
+    candidates = [
+        f"cv_avg_val_{metric}",
+        f"cv_avg_test_{metric}",
+        f"val_{metric}",
+        f"test_{metric}",
+        f"train_{metric}",
+    ]
+    for key in candidates:
+        if key in entry and entry[key] is not None:
+            return key, entry[key]
+    return None, None
+
+
+def _extract_sweep_metric(result, metric, aggregation):
+    rows = result.get("label_sweep_results", [])
+    values = []
+    for row in rows:
+        value = row.get(metric)
+        if value is None:
+            continue
+        values.append(float(value))
+
+    if not values:
+        return None, None
+
+    if aggregation != "mean":
+        raise ValueError(f"Unsupported grid_search.score_aggregation '{aggregation}'. Use 'mean'.")
+
+    return f"label_sweep_{aggregation}_{metric}", float(sum(values) / len(values))
+
+
+def _extract_trial_score(result, metric, aggregation):
+    if isinstance(result, dict) and "label_sweep_results" in result:
+        return _extract_sweep_metric(result, metric, aggregation)
+    return _extract_metric(result, metric)
+
+
+def run_grid_search(config_file=None, config=None, grid_search_override=None, save_model=False):
+    if config is None:
+        if config_file is None:
+            raise ValueError("Either config_file or config must be provided.")
+        base_config, config_path = _load_config(config_file)
+    else:
+        base_config = deepcopy(config)
+        config_path = config_file or f"{base_config.get('id', 'config')}.json"
+
+    if grid_search_override is not None:
+        base_config["grid_search"] = deepcopy(grid_search_override)
+
     grid_search = base_config.get("grid_search")
     if not grid_search:
         raise ValueError("Config must include a 'grid_search' section.")
 
     metric = grid_search.get("metric", "accuracy")
+    score_aggregation = grid_search.get("score_aggregation", "mean")
+    explicit_trials = grid_search.get("trials")
     params = grid_search.get("params", {})
-    if not params:
-        raise ValueError("'grid_search.params' is required.")
+    param_items = []
+    trial_param_sets = []
 
-    param_items = list(params.items())
-    values_list = [values if isinstance(values, list) else [values] for _, values in param_items]
-    combos = list(itertools.product(*values_list))
+    if explicit_trials:
+        trial_param_sets = [dict(trial) for trial in explicit_trials]
+    else:
+        if not params:
+            raise ValueError("Config must include either 'grid_search.params' or 'grid_search.trials'.")
+        param_items = list(params.items())
+        values_list = [values if isinstance(values, list) else [values] for _, values in param_items]
+        combos = list(itertools.product(*values_list))
+        trial_param_sets = [
+            {path: value for (path, _), value in zip(param_items, combo)}
+            for combo in combos
+        ]
 
     max_trials = grid_search.get("max_trials")
     if max_trials is not None:
-        combos = combos[: int(max_trials)]
+        trial_param_sets = trial_param_sets[: int(max_trials)]
 
-    signature = _grid_signature(config_path, metric, params, max_trials)
+    signature = _grid_signature(config_path, base_config, metric, params, explicit_trials, max_trials)
     state_path = _state_path(grid_search, base_config, signature)
     resume = grid_search.get("resume", True)
 
@@ -142,7 +205,7 @@ def main():
         base_log = base_config.get("log_filename", "default_log.csv")
         log_filename = f"grid_search_{base_log}"
 
-    print(f"Grid search: {len(combos)} trials, metric={metric}, config={config_path}")
+    print(f"Grid search: {len(trial_param_sets)} trials, metric={metric}, config={config_path}")
 
     best_score = None
     best_trial = None
@@ -161,44 +224,43 @@ def main():
         elif state:
             print(f"State file signature mismatch; starting fresh: {state_path}")
 
-    for idx, combo in enumerate(combos, start=1):
+    for idx, trial_params in enumerate(trial_param_sets, start=1):
         if idx in completed:
-            print(f"\nTrial {idx}/{len(combos)} (skipped, already completed)")
+            print(f"\nTrial {idx}/{len(trial_param_sets)} (skipped, already completed)")
             continue
+
         trial_config = deepcopy(base_config)
-        trial_params = {}
-        for (path, _), value in zip(param_items, combo):
+        for path, value in trial_params.items():
             _set_by_path(trial_config, path, value)
-            trial_params[path] = value
 
-        base_id = trial_config.get("id", "config")
-        trial_config["id"] = f"{base_id}_grid_{idx}"
+        trial_config["id"] = f"{trial_config.get('id', 'config')}_grid_{idx}"
 
-        print(f"\nTrial {idx}/{len(combos)}")
+        print(f"\nTrial {idx}/{len(trial_param_sets)}")
         for path, value in trial_params.items():
             print(f"  {path} = {value}")
 
-        entry = run_config(
+        result = run_pipeline_config(
             trial_config,
             DATA_MAP,
             PREPROCESSOR_MAP,
             MODEL_MAP,
             TRAINER_MAP,
-            save_model=args.models,
+            save_model=save_model,
             log_filename_override=log_filename,
-            clear_logger=True,
         )
 
-        metric_key, score = _extract_metric(entry, metric)
+        metric_key, score = _extract_trial_score(result, metric, score_aggregation)
         if score is None:
             raise RuntimeError(f"Metric '{metric}' not found in logs for trial {idx}.")
 
-        results.append({
-            "trial": idx,
-            "metric_key": metric_key,
-            "score": score,
-            "params": trial_params,
-        })
+        results.append(
+            {
+                "trial": idx,
+                "metric_key": metric_key,
+                "score": score,
+                "params": trial_params,
+            }
+        )
 
         if best_score is None or score > best_score:
             best_score = score
@@ -221,6 +283,25 @@ def main():
         print(f"  {best_trial['metric_key']} = {best_trial['score']:.4f}")
         for path, value in best_trial["params"].items():
             print(f"  {path} = {value}")
+
+    return {
+        "config_path": config_path,
+        "log_filename": log_filename,
+        "state_path": state_path,
+        "best_trial": best_trial,
+        "results": results,
+        "metric": metric,
+        "score_aggregation": score_aggregation,
+        "base_config": base_config,
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Grid search for pipeline configs")
+    parser.add_argument("config_file", nargs="?", default="belonging_config_chrononet_tfrecord.json")
+    parser.add_argument("-m", "--models", action="store_true", help="Save model artifacts and plots per trial")
+    args = parser.parse_args()
+    run_grid_search(config_file=args.config_file, save_model=args.models)
 
 
 if __name__ == "__main__":

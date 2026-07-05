@@ -110,10 +110,16 @@ def sequence_collate_fn(batch):
         for i, win in enumerate(windows):
             length = win.size(0)
             padded_windows[i, :length] = win
+    elif sample_dim == 3:
+        channels, sample_length = windows[0].shape[1:]
+        padded_windows = torch.zeros((batch_size, max_len, channels, sample_length), dtype=windows[0].dtype)
+        for i, win in enumerate(windows):
+            length = win.size(0)
+            padded_windows[i, :length] = win
     else:
         raise ValueError(
             f"Unsupported sample shape {tuple(windows[0].shape)}. "
-            "Expected [T, C, H, W]."
+            "Expected [T, C, H, W] or [T, C, L]."
         )
 
     labels = torch.tensor(labels, dtype=torch.long)
@@ -301,9 +307,11 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
         return gen
 
     scalograms_list = X.get('scalograms')
+    if scalograms_list is None:
+        scalograms_list = X.get('windows')
     person_ids = X.get('person_ids')
     if scalograms_list is None or person_ids is None:
-        raise ValueError("X must contain 'scalograms' and 'person_ids'")
+        raise ValueError("X must contain 'scalograms' or 'windows', and 'person_ids'")
     if len(scalograms_list) != len(person_ids) or len(y) != len(person_ids):
         raise ValueError("Mismatch between scalograms, person_ids, and labels lengths")
 

@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from dataset_retrievers.tfrecord_retriever import load_belonging_tfrecords
+from dataset_retrievers.raw_csv_retriever import load_belonging_raw_csvs
 from utils.log import logger
 
 
@@ -101,10 +102,30 @@ def _resolve_active_survey_columns(all_columns, label_col):
     return [c for c in all_columns if c not in drop_cols]
 
 
-def load_belonging_multimodal_tfrecords(dataset_params, metadata):
-    X, y, metadata = load_belonging_tfrecords(dataset_params, metadata)
+def _resolve_eeg_loader(dataset_params):
+    configured = dataset_params.get("eeg_loader_name", dataset_params.get("eeg_source"))
+    if configured is not None:
+        normalized = _normalize_label_mode(configured)
+        if normalized in {"tfrecord", "scalogram", "scalograms"}:
+            return load_belonging_tfrecords, "tfrecord"
+        if normalized in {"raw", "rawcsv"}:
+            return load_belonging_raw_csvs, "raw_csv"
+        raise ValueError(
+            f"Unsupported dataset_params.eeg_loader_name '{configured}'. "
+            "Use 'tfrecord' or 'raw_csv'."
+        )
+
+    if dataset_params.get("raw_data_dir"):
+        return load_belonging_raw_csvs, "raw_csv"
+    return load_belonging_tfrecords, "tfrecord"
+
+
+def _load_belonging_multimodal(dataset_params, metadata):
+    eeg_loader, eeg_loader_name = _resolve_eeg_loader(dataset_params)
+    X, y, metadata = eeg_loader(dataset_params, metadata)
     person_ids = [str(pid) for pid in X["person_ids"]]
-    scalograms_list = X["scalograms"]
+    eeg_key = "scalograms" if "scalograms" in X else "windows"
+    eeg_windows = X[eeg_key]
     y = np.asarray(y, dtype=int)
 
     nlp_csv_path = _resolve_nlp_csv_path(dataset_params)
@@ -132,7 +153,7 @@ def load_belonging_multimodal_tfrecords(dataset_params, metadata):
     if missing_nlp_people:
         logger.log("skipped_missing_nlp_people", len(missing_nlp_people))
         person_ids = [person_ids[i] for i in keep_indices]
-        scalograms_list = [scalograms_list[i] for i in keep_indices]
+        eeg_windows = [eeg_windows[i] for i in keep_indices]
         y = y[keep_indices]
 
     label_col = _resolve_label_col(dataset_params)
@@ -165,7 +186,7 @@ def load_belonging_multimodal_tfrecords(dataset_params, metadata):
             )
 
     X = {
-        "scalograms": scalograms_list,
+        eeg_key: eeg_windows,
         "person_ids": person_ids,
         "survey_features": survey_features,
         "survey_feature_names": active_survey_cols,
@@ -178,10 +199,28 @@ def load_belonging_multimodal_tfrecords(dataset_params, metadata):
             "num_survey_features": len(active_survey_cols),
             "survey_features_by_person": survey_features_by_person,
             "survey_label_col": label_col,
+            "eeg_loader_name": eeg_loader_name,
         }
     )
     logger.log("nlp_csv", nlp_csv_path)
     logger.log("num_survey_features", len(active_survey_cols))
     logger.log("survey_label_col", label_col)
+    logger.log("eeg_loader_name", eeg_loader_name)
 
     return X, y, metadata
+
+
+def load_belonging_multimodal(dataset_params, metadata):
+    return _load_belonging_multimodal(dataset_params, metadata)
+
+
+def load_belonging_multimodal_tfrecords(dataset_params, metadata):
+    params = dict(dataset_params)
+    params.setdefault("eeg_loader_name", "tfrecord")
+    return _load_belonging_multimodal(params, metadata)
+
+
+def load_belonging_multimodal_raw_csvs(dataset_params, metadata):
+    params = dict(dataset_params)
+    params.setdefault("eeg_loader_name", "raw_csv")
+    return _load_belonging_multimodal(params, metadata)
