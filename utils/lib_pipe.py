@@ -1,4 +1,3 @@
-import json
 import os
 import random
 from collections import defaultdict
@@ -497,15 +496,9 @@ def run_pipeline_config(
 
 
 def start_pipeline(config_file, data_map, preprocessor_map, model_map, trainer_map, save_model=False):
-    if not config_file.endswith('.json'):
-        raise ValueError("config_file must be a .json file")
-    if os.path.isabs(config_file) or os.path.exists(config_file):
-        config_path = config_file
-    else:
-        config_path = os.path.join('run_configs', config_file)
+    from utils.pipeline_setup import load_json_config
 
-    with open(config_path, 'r') as f:
-        config = json.load(f)
+    config, _config_path = load_json_config(config_file)
 
     return run_pipeline_config(
         config,

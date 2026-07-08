@@ -6,70 +6,14 @@ import os
 from copy import deepcopy
 
 from utils.lib_pipe import run_pipeline_config
-from dataset_retrievers.tfrecord_retriever import load_belonging_tfrecords
-from dataset_retrievers.raw_csv_retriever import load_belonging_raw_csvs
-from dataset_retrievers.tfrecord_multimodal_retriever import (
-    load_belonging_multimodal,
-    load_belonging_multimodal_raw_csvs,
-    load_belonging_multimodal_tfrecords,
+from utils.pipeline_setup import (
+    DATA_MAP,
+    MODEL_MAP,
+    PREPROCESSOR_MAP,
+    TRAINER_MAP,
+    load_json_config,
+    set_by_path,
 )
-from preprocessors.tfrecord_processor import tfrecord_preprocessor
-from architectures.chrononet import ChronoNet
-from architectures.cnn_gru import CNNGRU
-from architectures.cnn_lstm import CNNLSTM
-from architectures.raw_cnn_gru import RawCNNGRU
-from architectures.raw_cnn_lstm import RawCNNLSTM
-from architectures.raw_chrononet import RawChronoNet
-from trainers.belonging_trainer import BelongingTrainer
-from trainers.belonging_multimodal_trainer import BelongingMultimodalTrainer
-
-
-DATA_MAP = {
-    "load_belonging_tfrecords": load_belonging_tfrecords,
-    "load_belonging_raw_csvs": load_belonging_raw_csvs,
-    "load_belonging_multimodal": load_belonging_multimodal,
-    "load_belonging_multimodal_raw_csvs": load_belonging_multimodal_raw_csvs,
-    "load_belonging_multimodal_tfrecords": load_belonging_multimodal_tfrecords,
-}
-PREPROCESSOR_MAP = {
-    "tfrecord_preprocessor": tfrecord_preprocessor,
-    "sequence_preprocessor": tfrecord_preprocessor,
-}
-MODEL_MAP = {
-    "ChronoNet": ChronoNet,
-    "CNNGRU": CNNGRU,
-    "CNNLSTM": CNNLSTM,
-    "RawCNNGRU": RawCNNGRU,
-    "RawCNNLSTM": RawCNNLSTM,
-    "RawChronoNet": RawChronoNet,
-}
-TRAINER_MAP = {
-    "BelongingTrainer": BelongingTrainer,
-    "BelongingMultimodalTrainer": BelongingMultimodalTrainer,
-}
-
-
-def _set_by_path(config, path, value):
-    parts = path.split(".")
-    if not parts:
-        raise ValueError("Empty parameter path.")
-    cursor = config
-    for part in parts[:-1]:
-        if part not in cursor or not isinstance(cursor[part], dict):
-            raise KeyError(f"Invalid path segment '{part}' in '{path}'.")
-        cursor = cursor[part]
-    cursor[parts[-1]] = value
-
-
-def _load_config(config_file):
-    if not config_file.endswith(".json"):
-        raise ValueError("config_file must be a .json file")
-    if os.path.isabs(config_file) or os.path.exists(config_file):
-        config_path = config_file
-    else:
-        config_path = os.path.join("run_configs", config_file)
-    with open(config_path, "r") as f:
-        return json.load(f), config_path
 
 
 def _grid_signature(config_path, base_config, metric, params, trials, max_trials):
@@ -156,11 +100,31 @@ def _extract_trial_score(result, metric, aggregation):
     return _extract_metric(result, metric)
 
 
+def _build_trial_param_sets(grid_search):
+    explicit_trials = grid_search.get("trials")
+    params = grid_search.get("params", {})
+
+    if explicit_trials:
+        return [dict(trial) for trial in explicit_trials], params, explicit_trials
+
+    if not params:
+        raise ValueError("Config must include either 'grid_search.params' or 'grid_search.trials'.")
+
+    param_items = list(params.items())
+    values_list = [values if isinstance(values, list) else [values] for _, values in param_items]
+    combos = itertools.product(*values_list)
+    trial_param_sets = [
+        {path: value for (path, _), value in zip(param_items, combo)}
+        for combo in combos
+    ]
+    return trial_param_sets, params, explicit_trials
+
+
 def run_grid_search(config_file=None, config=None, grid_search_override=None, save_model=False):
     if config is None:
         if config_file is None:
             raise ValueError("Either config_file or config must be provided.")
-        base_config, config_path = _load_config(config_file)
+        base_config, config_path = load_json_config(config_file)
     else:
         base_config = deepcopy(config)
         config_path = config_file or f"{base_config.get('id', 'config')}.json"
@@ -174,23 +138,7 @@ def run_grid_search(config_file=None, config=None, grid_search_override=None, sa
 
     metric = grid_search.get("metric", "accuracy")
     score_aggregation = grid_search.get("score_aggregation", "mean")
-    explicit_trials = grid_search.get("trials")
-    params = grid_search.get("params", {})
-    param_items = []
-    trial_param_sets = []
-
-    if explicit_trials:
-        trial_param_sets = [dict(trial) for trial in explicit_trials]
-    else:
-        if not params:
-            raise ValueError("Config must include either 'grid_search.params' or 'grid_search.trials'.")
-        param_items = list(params.items())
-        values_list = [values if isinstance(values, list) else [values] for _, values in param_items]
-        combos = list(itertools.product(*values_list))
-        trial_param_sets = [
-            {path: value for (path, _), value in zip(param_items, combo)}
-            for combo in combos
-        ]
+    trial_param_sets, params, explicit_trials = _build_trial_param_sets(grid_search)
 
     max_trials = grid_search.get("max_trials")
     if max_trials is not None:
@@ -231,7 +179,7 @@ def run_grid_search(config_file=None, config=None, grid_search_override=None, sa
 
         trial_config = deepcopy(base_config)
         for path, value in trial_params.items():
-            _set_by_path(trial_config, path, value)
+            set_by_path(trial_config, path, value)
 
         trial_config["id"] = f"{trial_config.get('id', 'config')}_grid_{idx}"
 

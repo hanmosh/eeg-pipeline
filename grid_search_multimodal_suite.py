@@ -5,6 +5,7 @@ import os
 from copy import deepcopy
 
 from grid_search import run_grid_search
+from utils.pipeline_setup import load_json_config, set_by_path
 
 
 SUITE_ITEMS = (
@@ -55,20 +56,6 @@ TRIAL_PRESETS = {
         {"learning_rate": 0.0001, "dropout_rate": 0.4, "hidden_size": 32},
     ),
 }
-
-
-def _set_by_path(config, path, value):
-    parts = path.split(".")
-    cursor = config
-    for part in parts[:-1]:
-        cursor = cursor[part]
-    cursor[parts[-1]] = value
-
-
-def _load_json(path):
-    with open(path, "r") as f:
-        return json.load(f)
-
 
 def _safe_name(value):
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in value)
@@ -133,7 +120,7 @@ def _save_best_config(result, output_dir):
     best_config.pop("grid_search", None)
 
     for path, value in best_trial["params"].items():
-        _set_by_path(best_config, path, value)
+        set_by_path(best_config, path, value)
 
     best_config["id"] = f"{best_config.get('id', 'config')}_best_training"
 
@@ -256,7 +243,8 @@ def main():
 
     for idx, item in enumerate(SUITE_ITEMS, start=1):
         print(f"\nSuite run {idx}/{total}: {item['name']}")
-        base_config = _normalize_base_config(_load_json(item["config_file"]), args)
+        base_config, _config_path = load_json_config(item["config_file"])
+        base_config = _normalize_base_config(base_config, args)
         grid_override = _build_grid_override(item, args)
         result = run_grid_search(
             config_file=item["config_file"],

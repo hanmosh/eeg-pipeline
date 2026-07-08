@@ -282,34 +282,19 @@ def _load_fold_manifest_spec(preprocessor_params, metadata, unique_person_ids, c
     }
 
 
-def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
-    """TFRecord sequence preprocessing (participant-wise splits)."""
-    logger.log_dict(preprocessor_params)
+def _build_generator(seed_value):
+    if seed_value is None:
+        return None
+    gen = torch.Generator()
+    gen.manual_seed(int(seed_value))
+    return gen
 
-    test_split = preprocessor_params.get('test_split', 0.2)
-    val_split = preprocessor_params.get('val_split', 0.2)
-    batch_size = preprocessor_params.get('batch_size', 16)
-    cv_folds = preprocessor_params.get('cv_folds', 0)
-    cv_repeats = int(preprocessor_params.get('cv_repeats', 1))
-    downsample_train = preprocessor_params.get('downsample_train', False)
-    max_windows_per_person = preprocessor_params.get('max_windows_per_person', None)
-    sequence_length = preprocessor_params.get('sequence_length', None)
-    sequence_stride = preprocessor_params.get('sequence_stride', None)
-    cv_fold_as_test = bool(preprocessor_params.get('cv_fold_as_test', False))
-    seed = preprocessor_params.get('seed', None)
-    effective_seed = int(seed) if seed is not None else None
 
-    def _build_generator(seed_value):
-        if seed_value is None:
-            return None
-        gen = torch.Generator()
-        gen.manual_seed(int(seed_value))
-        return gen
-
-    scalograms_list = X.get('scalograms')
+def _prepare_sequence_inputs(X, y):
+    scalograms_list = X.get("scalograms")
     if scalograms_list is None:
-        scalograms_list = X.get('windows')
-    person_ids = X.get('person_ids')
+        scalograms_list = X.get("windows")
+    person_ids = X.get("person_ids")
     if scalograms_list is None or person_ids is None:
         raise ValueError("X must contain 'scalograms' or 'windows', and 'person_ids'")
     if len(scalograms_list) != len(person_ids) or len(y) != len(person_ids):
@@ -326,6 +311,114 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
     unique_person_ids = np.array(list(person_to_windows.keys()))
     unique_labels = np.array([person_to_label[str(pid)] for pid in unique_person_ids])
     class_counts = Counter(unique_labels)
+    return person_to_windows, person_to_label, unique_person_ids, unique_labels, class_counts
+
+
+def _make_sequence_dataset(
+    person_ids,
+    person_to_windows,
+    person_to_label,
+    dataset_kwargs,
+    *,
+    downsample=False,
+):
+    return TFRecordSequenceDataset(
+        person_ids,
+        person_to_windows,
+        person_to_label,
+        downsample=downsample,
+        **dataset_kwargs,
+    )
+
+
+def _make_sequence_loader(dataset, batch_size, shuffle, *, generator=None):
+    if dataset is None:
+        return None
+
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": 0,
+        "collate_fn": sequence_collate_fn,
+    }
+    if generator is not None:
+        loader_kwargs["generator"] = generator
+    return DataLoader(dataset, **loader_kwargs)
+
+
+def _build_cv_split_plan(manifest_spec, cv_people, cv_labels, cv_folds, cv_repeats, effective_seed):
+    if manifest_spec is not None:
+        split_plan = []
+        ordered_people = manifest_spec["ordered_people"]
+        for fold_num in range(1, cv_folds + 1):
+            val_persons = np.asarray(manifest_spec["fold_to_people"][fold_num], dtype=str)
+            val_people_set = set(val_persons.tolist())
+            train_persons = np.asarray(
+                [pid for pid in ordered_people if pid not in val_people_set],
+                dtype=str,
+            )
+            split_plan.append((fold_num, 1, fold_num, train_persons, val_persons))
+        return cv_folds, split_plan
+
+    if cv_repeats > 1:
+        splitter = RepeatedStratifiedKFold(
+            n_splits=cv_folds,
+            n_repeats=cv_repeats,
+            random_state=effective_seed,
+        )
+        total_cv_folds = cv_folds * cv_repeats
+        split_plan = []
+        for fold_idx, (train_idx, val_idx) in enumerate(splitter.split(cv_people, cv_labels), start=1):
+            repeat_idx = ((fold_idx - 1) // cv_folds) + 1
+            fold_in_repeat = ((fold_idx - 1) % cv_folds) + 1
+            train_persons = cv_people[train_idx]
+            val_persons = cv_people[val_idx]
+            split_plan.append((fold_idx, repeat_idx, fold_in_repeat, train_persons, val_persons))
+        return total_cv_folds, split_plan
+
+    splitter = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=effective_seed)
+    split_plan = []
+    for fold_idx, (train_idx, val_idx) in enumerate(splitter.split(cv_people, cv_labels), start=1):
+        train_persons = cv_people[train_idx]
+        val_persons = cv_people[val_idx]
+        split_plan.append((fold_idx, 1, fold_idx, train_persons, val_persons))
+    return cv_folds, split_plan
+
+
+def _log_class_counts(split_name, labels):
+    if len(labels) == 0:
+        return
+
+    counter = Counter(labels)
+    for label, count in counter.items():
+        logger.log(f"{split_name}_class_{label}_count", count)
+
+
+def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
+    """TFRecord sequence preprocessing (participant-wise splits)."""
+    logger.log_dict(preprocessor_params)
+
+    test_split = preprocessor_params.get('test_split', 0.2)
+    val_split = preprocessor_params.get('val_split', 0.2)
+    batch_size = preprocessor_params.get('batch_size', 16)
+    cv_folds = preprocessor_params.get('cv_folds', 0)
+    cv_repeats = int(preprocessor_params.get('cv_repeats', 1))
+    downsample_train = preprocessor_params.get('downsample_train', False)
+    max_windows_per_person = preprocessor_params.get('max_windows_per_person', None)
+    sequence_length = preprocessor_params.get('sequence_length', None)
+    sequence_stride = preprocessor_params.get('sequence_stride', None)
+    cv_fold_as_test = bool(preprocessor_params.get('cv_fold_as_test', False))
+    seed = preprocessor_params.get('seed', None)
+    effective_seed = int(seed) if seed is not None else None
+    dataset_kwargs = {
+        "sequence_length": sequence_length,
+        "sequence_stride": sequence_stride,
+        "max_windows_per_person": max_windows_per_person,
+    }
+
+    person_to_windows, person_to_label, unique_person_ids, unique_labels, class_counts = _prepare_sequence_inputs(
+        X, y
+    )
     num_classes = len(class_counts)
     manifest_spec = _load_fold_manifest_spec(
         preprocessor_params,
@@ -377,58 +470,26 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
                 f"Smallest CV class has {min_cv_class} people."
             )
 
-        if manifest_spec is not None:
-            total_cv_folds = cv_folds
-            split_plan = []
-            ordered_people = manifest_spec['ordered_people']
-            for fold_num in range(1, cv_folds + 1):
-                val_persons = np.asarray(manifest_spec['fold_to_people'][fold_num], dtype=str)
-                val_people_set = set(val_persons.tolist())
-                train_persons = np.asarray(
-                    [pid for pid in ordered_people if pid not in val_people_set],
-                    dtype=str,
-                )
-                split_plan.append((fold_num, 1, fold_num, train_persons, val_persons))
-        elif cv_repeats > 1:
-            splitter = RepeatedStratifiedKFold(
-                n_splits=cv_folds,
-                n_repeats=cv_repeats,
-                random_state=effective_seed,
-            )
-            total_cv_folds = cv_folds * cv_repeats
-            split_plan = []
-            for fold_idx, (train_idx, val_idx) in enumerate(splitter.split(cv_people, cv_labels), start=1):
-                repeat_idx = ((fold_idx - 1) // cv_folds) + 1
-                fold_in_repeat = ((fold_idx - 1) % cv_folds) + 1
-                train_persons = cv_people[train_idx]
-                val_persons = cv_people[val_idx]
-                split_plan.append((fold_idx, repeat_idx, fold_in_repeat, train_persons, val_persons))
-        else:
-            splitter = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=effective_seed)
-            total_cv_folds = cv_folds
-            split_plan = []
-            for fold_idx, (train_idx, val_idx) in enumerate(splitter.split(cv_people, cv_labels), start=1):
-                train_persons = cv_people[train_idx]
-                val_persons = cv_people[val_idx]
-                split_plan.append((fold_idx, 1, fold_idx, train_persons, val_persons))
+        total_cv_folds, split_plan = _build_cv_split_plan(
+            manifest_spec,
+            cv_people,
+            cv_labels,
+            cv_folds,
+            cv_repeats,
+            effective_seed,
+        )
 
         fold_data = []
-        test_dataset = TFRecordSequenceDataset(
-            holdout_test_people,
-            person_to_windows,
-            person_to_label,
-            sequence_length=sequence_length,
-            sequence_stride=sequence_stride,
-            max_windows_per_person=max_windows_per_person,
-            downsample=False,
-        ) if len(holdout_test_people) > 0 else None
-        test_loader = DataLoader(
-            test_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=0,
-            collate_fn=sequence_collate_fn,
-        ) if test_dataset is not None else None
+        test_dataset = None
+        if len(holdout_test_people) > 0:
+            test_dataset = _make_sequence_dataset(
+                holdout_test_people,
+                person_to_windows,
+                person_to_label,
+                dataset_kwargs,
+                downsample=False,
+            )
+        test_loader = _make_sequence_loader(test_dataset, batch_size, shuffle=False)
 
         if test_dataset is not None:
             print(
@@ -444,22 +505,18 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
             train_neg = len(train_labels) - train_pos
             val_neg = len(val_labels) - val_pos
 
-            train_dataset = TFRecordSequenceDataset(
+            train_dataset = _make_sequence_dataset(
                 train_persons,
                 person_to_windows,
                 person_to_label,
-                sequence_length=sequence_length,
-                sequence_stride=sequence_stride,
-                max_windows_per_person=max_windows_per_person,
+                dataset_kwargs,
                 downsample=downsample_train,
             )
-            val_dataset = TFRecordSequenceDataset(
+            val_dataset = _make_sequence_dataset(
                 val_persons,
                 person_to_windows,
                 person_to_label,
-                sequence_length=sequence_length,
-                sequence_stride=sequence_stride,
-                max_windows_per_person=max_windows_per_person,
+                dataset_kwargs,
                 downsample=False,
             )
 
@@ -481,20 +538,16 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
                 f"Val {val_pos} pos / {val_neg} neg"
             )
 
-            train_loader = DataLoader(
+            train_loader = _make_sequence_loader(
                 train_dataset,
-                batch_size=batch_size,
                 shuffle=True,
-                num_workers=0,
-                collate_fn=sequence_collate_fn,
+                batch_size=batch_size,
                 generator=_build_generator(effective_seed + fold_idx) if effective_seed is not None else None,
             )
-            val_loader = DataLoader(
+            val_loader = _make_sequence_loader(
                 val_dataset,
                 batch_size=batch_size,
                 shuffle=False,
-                num_workers=0,
-                collate_fn=sequence_collate_fn,
             )
 
             fold_data.append({
@@ -528,9 +581,7 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
         })
 
         if test_dataset is not None and len(holdout_test_labels) > 0:
-            counter = Counter(holdout_test_labels.tolist())
-            for label, count in counter.items():
-                logger.log(f'test_class_{label}_count', count)
+            _log_class_counts("test", holdout_test_labels.tolist())
 
         return fold_data, metadata
 
@@ -561,33 +612,31 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
         train_persons = train_val_persons
         val_persons = np.array([])
 
-    train_dataset = TFRecordSequenceDataset(
+    train_dataset = _make_sequence_dataset(
         train_persons,
         person_to_windows,
         person_to_label,
-        sequence_length=sequence_length,
-        sequence_stride=sequence_stride,
-        max_windows_per_person=max_windows_per_person,
+        dataset_kwargs,
         downsample=downsample_train,
     )
-    val_dataset = TFRecordSequenceDataset(
-        val_persons,
-        person_to_windows,
-        person_to_label,
-        sequence_length=sequence_length,
-        sequence_stride=sequence_stride,
-        max_windows_per_person=max_windows_per_person,
-        downsample=False,
-    ) if len(val_persons) > 0 else None
-    test_dataset = TFRecordSequenceDataset(
-        test_persons,
-        person_to_windows,
-        person_to_label,
-        sequence_length=sequence_length,
-        sequence_stride=sequence_stride,
-        max_windows_per_person=max_windows_per_person,
-        downsample=False,
-    ) if len(test_persons) > 0 else None
+    val_dataset = None
+    if len(val_persons) > 0:
+        val_dataset = _make_sequence_dataset(
+            val_persons,
+            person_to_windows,
+            person_to_label,
+            dataset_kwargs,
+            downsample=False,
+        )
+    test_dataset = None
+    if len(test_persons) > 0:
+        test_dataset = _make_sequence_dataset(
+            test_persons,
+            person_to_windows,
+            person_to_label,
+            dataset_kwargs,
+            downsample=False,
+        )
 
     train_windows = train_dataset.num_windows
     val_windows = val_dataset.num_windows if val_dataset is not None else 0
@@ -599,28 +648,14 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
         f"Test: {len(test_persons)} people ({test_windows} windows)"
     )
 
-    train_loader = DataLoader(
+    train_loader = _make_sequence_loader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0,
-        collate_fn=sequence_collate_fn,
         generator=_build_generator(effective_seed),
     )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0,
-        collate_fn=sequence_collate_fn,
-    ) if val_dataset is not None else None
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0,
-        collate_fn=sequence_collate_fn,
-    ) if test_dataset is not None else None
+    val_loader = _make_sequence_loader(val_dataset, batch_size, shuffle=False)
+    test_loader = _make_sequence_loader(test_dataset, batch_size, shuffle=False)
 
     metadata.update({
         'num_train_samples': train_windows,
@@ -645,10 +680,7 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
         ('val', val_dataset.labels if val_dataset is not None else []),
         ('test', test_dataset.labels if test_dataset is not None else []),
     ]:
-        if len(split_labels) > 0:
-            counter = Counter(split_labels)
-            for label, count in counter.items():
-                logger.log(f'{split_name}_class_{label}_count', count)
+        _log_class_counts(split_name, split_labels)
 
     data = {
         'train_loader': train_loader,

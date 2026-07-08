@@ -61,7 +61,6 @@ class Logger:
         """
         Save the logged entry to a CSV file. If the file exists, append to it.
         Files are saved in the 'logs/' directory.
-        Once saved, the internal log entry list is cleared.
         Parameters:
             filepname (str): name of the CSV file.
         Returns:
@@ -69,15 +68,9 @@ class Logger:
         """
         filepath = f"logs/{filename}"
         df = pd.DataFrame(self.build_entry_dict(), index=[0])
-        try:
-            #check if logs/ exists, if not create it
-            os.makedirs(os.path.dirname(filepath), exist_ok=True)
-
-            existing_df = pd.read_csv(filepath)
-            combined_df = pd.concat([existing_df, df], ignore_index=True)
-            combined_df.to_csv(filepath, index=False)
-        except FileNotFoundError:
-            df.to_csv(filepath, index=False)
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        file_exists = os.path.exists(filepath)
+        df.to_csv(filepath, mode='a', header=not file_exists, index=False)
 
 #instantiate a global logger
 logger = Logger()
