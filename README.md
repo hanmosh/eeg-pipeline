@@ -1,10 +1,12 @@
 # Machine Learning Pipeline for Applied ML in Scientific Research
 
-### Author: Colin J. DuHamel | B.S. + M.S. California Polytechnic State University, San Luis Obispo
+### Author: Hannah Moshtaghi | B.S. + M.S. California Polytechnic State University, San Luis Obispo
 
 This repository contains a machine learning pipeline designed for applied machine learning tasks in scientific research. The pipeline includes data collection, preprocessing, model training, evaluation, and logging components to facilitate reproducible and efficient ML workflows.
 
 This pipeline offers a skeleton structure that can be customized for various scientific datasets and ML models, maintaining modularity and scalability.
+
+Adapted from Colin J. DuHamel's [pipeline](https://github.com/cjduhamel/pipeline) 
 
 ## Usage
 
@@ -123,11 +125,3 @@ NOTE: If model saving is not enabled, the model tracker will still function, but
 ## Further Reference and Future Updates
 
 To understand the implementation details and to see updated documentation, please refer to the code comments and docstrings within the repository. The README will be updated to the best of my ability, but the code itself will always have the most accurate and up-to-date information.
-
-
-        
-
-
-
-
-
