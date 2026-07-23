@@ -1,4 +1,4 @@
-participant,label,survey_pred,fusion_pred
+﻿participant,label,survey_pred,fusion_pred
 67c26b6a6aed7a8612189b14,0,0,0
 67c27401f112be75fec84544,1,1,1
 67c27615e71bf89783d80e7f,1,1,1
@@ -18,7 +18,7 @@ participant,label,survey_pred,fusion_pred
 67c77493037bc8de9f88f767,0,0,0
 67c777d88cb8fc5788663844,0,0,0
 67c77911ff18ef1bd5d4ca8a,1,1,1
-67c77b7fbe53b42f18bcb28c,0,1,1
+67c77b7fbe53b42f18bcb28c,0,1,0
 67c77c008cb8fc57886640fb,0,1,1
 67c77d9fff18ef1bd5d4d31a,0,0,0
 67c77fa5037bc8de9f890800,0,0,0
@@ -37,5 +37,5 @@ participant,label,survey_pred,fusion_pred
 6808335d332567ffa52165f8,1,1,1
 68097c08ee2519584c38974c,1,0,1
 680acc8a59c825dbf7c31deb,0,1,1
-681144c8bb134e569280d496,1,0,1
+681144c8bb134e569280d496,1,0,0
 681bc78d7f0a181a7e96a598,1,0,0
