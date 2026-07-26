@@ -17,6 +17,138 @@ DEFAULT_FOLD_MANIFEST_COLUMNS = {
     "WeightedDiffLabel": "weighted_fold",
 }
 
+DEFAULT_SPLIT_SCOPE = "inter_subject"
+
+
+class TrainScalogramSpecAugment:
+    """Mild SpecAugment-style masking for [T, C, H, W] scalogram sequences.
+
+    We treat H as the frequency axis and W as the time axis. The same sampled
+    mask is applied across all windows/channels in the sequence item to keep the
+    augmentation conservative for this small dataset.
+    """
+
+    def __init__(
+        self,
+        *,
+        p=0.1,
+        freq_mask_param=5,
+        time_mask_param=10,
+        num_freq_masks=1,
+        num_time_masks=1,
+        mask_value=0.0,
+    ):
+        self.p = float(p)
+        self.freq_mask_param = int(freq_mask_param)
+        self.time_mask_param = int(time_mask_param)
+        self.num_freq_masks = int(num_freq_masks)
+        self.num_time_masks = int(num_time_masks)
+        self.mask_value = float(mask_value)
+
+        if not 0.0 <= self.p <= 1.0:
+            raise ValueError("preprocessor_params.specaugment.p must be between 0 and 1.")
+        if self.freq_mask_param < 0:
+            raise ValueError("preprocessor_params.specaugment.freq_mask_param must be >= 0.")
+        if self.time_mask_param < 0:
+            raise ValueError("preprocessor_params.specaugment.time_mask_param must be >= 0.")
+        if self.num_freq_masks < 0:
+            raise ValueError("preprocessor_params.specaugment.num_freq_masks must be >= 0.")
+        if self.num_time_masks < 0:
+            raise ValueError("preprocessor_params.specaugment.num_time_masks must be >= 0.")
+
+    def _sample_mask(self, axis_size, mask_param):
+        if axis_size <= 0 or mask_param <= 0:
+            return None
+        max_width = min(int(axis_size), int(mask_param))
+        if max_width <= 0:
+            return None
+
+        mask_width = int(torch.randint(0, max_width + 1, (1,)).item())
+        if mask_width <= 0:
+            return None
+        start_max = axis_size - mask_width
+        start = 0 if start_max <= 0 else int(torch.randint(0, start_max + 1, (1,)).item())
+        return start, start + mask_width
+
+    def __call__(self, windows):
+        if windows.ndim != 4:
+            return windows
+        if self.p <= 0.0 or torch.rand(1).item() > self.p:
+            return windows
+
+        augmented = windows.clone()
+        _, _, height, width = augmented.shape
+
+        for _ in range(self.num_freq_masks):
+            mask_range = self._sample_mask(height, self.freq_mask_param)
+            if mask_range is None:
+                continue
+            start, end = mask_range
+            augmented[:, :, start:end, :] = self.mask_value
+
+        for _ in range(self.num_time_masks):
+            mask_range = self._sample_mask(width, self.time_mask_param)
+            if mask_range is None:
+                continue
+            start, end = mask_range
+            augmented[:, :, :, start:end] = self.mask_value
+
+        return augmented
+
+
+class TrainScalogramGaussianNoise:
+    """Small additive Gaussian noise for normalized [T, C, H, W] scalograms."""
+
+    def __init__(
+        self,
+        *,
+        p=0.1,
+        std=0.01,
+        clamp_min=0.0,
+        clamp_max=1.0,
+    ):
+        self.p = float(p)
+        self.std = float(std)
+        self.clamp_min = None if clamp_min is None else float(clamp_min)
+        self.clamp_max = None if clamp_max is None else float(clamp_max)
+
+        if not 0.0 <= self.p <= 1.0:
+            raise ValueError("preprocessor_params.gaussian_noise.p must be between 0 and 1.")
+        if self.std < 0.0:
+            raise ValueError("preprocessor_params.gaussian_noise.std must be >= 0.")
+        if (
+            self.clamp_min is not None
+            and self.clamp_max is not None
+            and self.clamp_min > self.clamp_max
+        ):
+            raise ValueError("preprocessor_params.gaussian_noise.clamp_min must be <= clamp_max.")
+
+    def __call__(self, windows):
+        if windows.ndim != 4:
+            return windows
+        if self.p <= 0.0 or self.std <= 0.0 or torch.rand(1).item() > self.p:
+            return windows
+
+        augmented = windows + (torch.randn_like(windows) * self.std)
+        if self.clamp_min is None and self.clamp_max is None:
+            return augmented
+        min_value = self.clamp_min if self.clamp_min is not None else float("-inf")
+        max_value = self.clamp_max if self.clamp_max is not None else float("inf")
+        return torch.clamp(augmented, min=min_value, max=max_value)
+
+
+class TrainScalogramTransformChain:
+    """Applies multiple train-only scalogram transforms in sequence."""
+
+    def __init__(self, transforms):
+        self.transforms = [transform for transform in transforms if transform is not None]
+
+    def __call__(self, windows):
+        augmented = windows
+        for transform in self.transforms:
+            augmented = transform(augmented)
+        return augmented
+
 
 class TFRecordSequenceDataset(Dataset):
     """Sequences of window tensors for each participant."""
@@ -30,6 +162,7 @@ class TFRecordSequenceDataset(Dataset):
         sequence_stride=None,
         max_windows_per_person=None,
         downsample=False,
+        window_transform=None,
     ):
         self.person_ids = [str(pid) for pid in person_ids]
         self.person_to_windows = {}
@@ -38,6 +171,7 @@ class TFRecordSequenceDataset(Dataset):
         self.sequence_stride = sequence_stride or 0
         self.max_windows_per_person = max_windows_per_person
         self.downsample = downsample
+        self.window_transform = window_transform
 
         self.sequences = []
         self.sequence_labels = []
@@ -90,6 +224,8 @@ class TFRecordSequenceDataset(Dataset):
         pid, start, end = self.sequences[idx]
         windows = self.person_to_windows[pid][start:end]
         windows = torch.as_tensor(windows, dtype=torch.float32)
+        if self.window_transform is not None:
+            windows = self.window_transform(windows)
         label = self.sequence_labels[idx]
         return windows, label, pid
 
@@ -290,6 +426,21 @@ def _build_generator(seed_value):
     return gen
 
 
+def _normalize_split_scope(value):
+    if value is None:
+        return DEFAULT_SPLIT_SCOPE
+
+    normalized = str(value).strip().lower()
+    normalized = normalized.replace("-", "").replace("_", "").replace(" ", "")
+    if normalized in {"intersubject", "participantwise", "personwise", "subjectwise"}:
+        return "inter_subject"
+
+    raise ValueError(
+        "Only inter-subject splitting is supported. Remove preprocessor_params.split_scope "
+        "or set it to 'inter_subject'."
+    )
+
+
 def _prepare_sequence_inputs(X, y):
     scalograms_list = X.get("scalograms")
     if scalograms_list is None:
@@ -321,12 +472,14 @@ def _make_sequence_dataset(
     dataset_kwargs,
     *,
     downsample=False,
+    window_transform=None,
 ):
     return TFRecordSequenceDataset(
         person_ids,
         person_to_windows,
         person_to_label,
         downsample=downsample,
+        window_transform=window_transform,
         **dataset_kwargs,
     )
 
@@ -394,27 +547,234 @@ def _log_class_counts(split_name, labels):
         logger.log(f"{split_name}_class_{label}_count", count)
 
 
+def _resolve_train_scalogram_specaugment(preprocessor_params):
+    raw_config = preprocessor_params.get("specaugment")
+    if raw_config is None:
+        return None, {
+            "enabled": False,
+            "p": 0.0,
+            "freq_mask_param": 0,
+            "time_mask_param": 0,
+            "num_freq_masks": 0,
+            "num_time_masks": 0,
+            "mask_value": 0.0,
+        }
+    if not isinstance(raw_config, dict):
+        raise ValueError("preprocessor_params.specaugment must be a dictionary when provided.")
+
+    config = {
+        "enabled": bool(raw_config.get("enabled", False)),
+        "p": float(raw_config.get("p", 0.1)),
+        "freq_mask_param": int(raw_config.get("freq_mask_param", 5)),
+        "time_mask_param": int(raw_config.get("time_mask_param", 10)),
+        "num_freq_masks": int(raw_config.get("num_freq_masks", 1)),
+        "num_time_masks": int(raw_config.get("num_time_masks", 1)),
+        "mask_value": float(raw_config.get("mask_value", 0.0)),
+    }
+    if not config["enabled"]:
+        return None, config
+
+    augmenter = TrainScalogramSpecAugment(
+        p=config["p"],
+        freq_mask_param=config["freq_mask_param"],
+        time_mask_param=config["time_mask_param"],
+        num_freq_masks=config["num_freq_masks"],
+        num_time_masks=config["num_time_masks"],
+        mask_value=config["mask_value"],
+    )
+    return augmenter, config
+
+
+def _resolve_train_scalogram_gaussian_noise(preprocessor_params):
+    raw_config = preprocessor_params.get("gaussian_noise")
+    if raw_config is None:
+        return None, {
+            "enabled": False,
+            "p": 0.0,
+            "std": 0.0,
+            "clamp_min": 0.0,
+            "clamp_max": 1.0,
+        }
+    if not isinstance(raw_config, dict):
+        raise ValueError("preprocessor_params.gaussian_noise must be a dictionary when provided.")
+
+    config = {
+        "enabled": bool(raw_config.get("enabled", False)),
+        "p": float(raw_config.get("p", 0.1)),
+        "std": float(raw_config.get("std", 0.01)),
+        "clamp_min": raw_config.get("clamp_min", 0.0),
+        "clamp_max": raw_config.get("clamp_max", 1.0),
+    }
+    if config["clamp_min"] is not None:
+        config["clamp_min"] = float(config["clamp_min"])
+    if config["clamp_max"] is not None:
+        config["clamp_max"] = float(config["clamp_max"])
+    if not config["enabled"]:
+        return None, config
+
+    augmenter = TrainScalogramGaussianNoise(
+        p=config["p"],
+        std=config["std"],
+        clamp_min=config["clamp_min"],
+        clamp_max=config["clamp_max"],
+    )
+    return augmenter, config
+
+
+def _compose_train_scalogram_transforms(*transforms):
+    active_transforms = [transform for transform in transforms if transform is not None]
+    if not active_transforms:
+        return None
+    if len(active_transforms) == 1:
+        return active_transforms[0]
+    return TrainScalogramTransformChain(active_transforms)
+
+
+def _make_optional_sequence_dataset(
+    person_ids,
+    person_to_windows,
+    person_to_label,
+    dataset_kwargs,
+    *,
+    downsample=False,
+    window_transform=None,
+):
+    if person_ids is None or len(person_ids) == 0:
+        return None
+    return _make_sequence_dataset(
+        person_ids,
+        person_to_windows,
+        person_to_label,
+        dataset_kwargs,
+        downsample=downsample,
+        window_transform=window_transform,
+    )
+
+
+def _labels_for_people(person_ids, person_to_label):
+    return [person_to_label[str(pid)] for pid in person_ids]
+
+
+def _summarize_binary_labels(labels):
+    pos_count = int(sum(labels))
+    neg_count = len(labels) - pos_count
+    return pos_count, neg_count
+
+
+def _resolve_train_scalogram_augmentation(preprocessor_params):
+    train_specaugment, train_specaugment_config = _resolve_train_scalogram_specaugment(preprocessor_params)
+    train_gaussian_noise, train_gaussian_noise_config = _resolve_train_scalogram_gaussian_noise(preprocessor_params)
+
+    train_window_transform = _compose_train_scalogram_transforms(
+        train_specaugment,
+        train_gaussian_noise,
+    )
+    augmentation_metadata = {
+        "train_specaugment_enabled": bool(train_specaugment_config.get("enabled")),
+        "train_specaugment_p": float(train_specaugment_config.get("p", 0.0)),
+        "train_specaugment_freq_mask_param": int(train_specaugment_config.get("freq_mask_param", 0)),
+        "train_specaugment_time_mask_param": int(train_specaugment_config.get("time_mask_param", 0)),
+        "train_specaugment_num_freq_masks": int(train_specaugment_config.get("num_freq_masks", 0)),
+        "train_specaugment_num_time_masks": int(train_specaugment_config.get("num_time_masks", 0)),
+        "train_specaugment_mask_value": float(train_specaugment_config.get("mask_value", 0.0)),
+        "train_gaussian_noise_enabled": bool(train_gaussian_noise_config.get("enabled")),
+        "train_gaussian_noise_p": float(train_gaussian_noise_config.get("p", 0.0)),
+        "train_gaussian_noise_std": float(train_gaussian_noise_config.get("std", 0.0)),
+        "train_gaussian_noise_clamp_min": train_gaussian_noise_config.get("clamp_min"),
+        "train_gaussian_noise_clamp_max": train_gaussian_noise_config.get("clamp_max"),
+    }
+    return train_window_transform, augmentation_metadata
+
+
+def _log_metadata_values(values):
+    for key, value in values.items():
+        logger.log(key, value)
+
+
+def _build_shared_preprocessor_metadata(
+    *,
+    split_scope,
+    batch_size,
+    downsample_train,
+    max_windows_per_person,
+    sequence_length,
+    sequence_stride,
+    effective_seed,
+    augmentation_metadata,
+):
+    return {
+        "split_scope": split_scope,
+        "batch_size": batch_size,
+        "downsample_train": downsample_train,
+        "max_windows_per_person": max_windows_per_person,
+        "sequence_length": sequence_length,
+        "sequence_stride": sequence_stride,
+        "seed": effective_seed,
+        **augmentation_metadata,
+    }
+
+
+def _print_cv_fold_summary(
+    *,
+    fold_idx,
+    cv_folds,
+    repeat_idx,
+    cv_repeats,
+    fold_in_repeat,
+    total_cv_folds,
+    train_people_count,
+    train_windows,
+    val_people_count,
+    val_windows,
+    train_pos,
+    train_neg,
+    val_pos,
+    val_neg,
+):
+    if cv_repeats > 1:
+        print(
+            f"Repeat {repeat_idx}/{cv_repeats}, Fold {fold_in_repeat}/{cv_folds} "
+            f"(global {fold_idx}/{total_cv_folds}): "
+            f"Train {train_people_count} people ({train_windows} windows), "
+            f"Val {val_people_count} people ({val_windows} windows)"
+        )
+    else:
+        print(
+            f"Fold {fold_idx}/{cv_folds}: "
+            f"Train {train_people_count} people ({train_windows} windows), "
+            f"Val {val_people_count} people ({val_windows} windows)"
+        )
+    print(
+        f"Fold {fold_idx}: Train {train_pos} pos / {train_neg} neg | "
+        f"Val {val_pos} pos / {val_neg} neg"
+    )
+
+
 def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
     """TFRecord sequence preprocessing (participant-wise splits)."""
     logger.log_dict(preprocessor_params)
 
-    test_split = preprocessor_params.get('test_split', 0.2)
-    val_split = preprocessor_params.get('val_split', 0.2)
-    batch_size = preprocessor_params.get('batch_size', 16)
-    cv_folds = preprocessor_params.get('cv_folds', 0)
-    cv_repeats = int(preprocessor_params.get('cv_repeats', 1))
-    downsample_train = preprocessor_params.get('downsample_train', False)
-    max_windows_per_person = preprocessor_params.get('max_windows_per_person', None)
-    sequence_length = preprocessor_params.get('sequence_length', None)
-    sequence_stride = preprocessor_params.get('sequence_stride', None)
-    cv_fold_as_test = bool(preprocessor_params.get('cv_fold_as_test', False))
-    seed = preprocessor_params.get('seed', None)
+    test_split = preprocessor_params.get("test_split", 0.2)
+    val_split = preprocessor_params.get("val_split", 0.2)
+    batch_size = preprocessor_params.get("batch_size", 16)
+    cv_folds = preprocessor_params.get("cv_folds", 0)
+    cv_repeats = int(preprocessor_params.get("cv_repeats", 1))
+    downsample_train = preprocessor_params.get("downsample_train", False)
+    max_windows_per_person = preprocessor_params.get("max_windows_per_person", None)
+    sequence_length = preprocessor_params.get("sequence_length", None)
+    sequence_stride = preprocessor_params.get("sequence_stride", None)
+    cv_fold_as_test = bool(preprocessor_params.get("cv_fold_as_test", False))
+    seed = preprocessor_params.get("seed", None)
     effective_seed = int(seed) if seed is not None else None
+    split_scope = _normalize_split_scope(preprocessor_params.get("split_scope"))
+
+    train_window_transform, augmentation_metadata = _resolve_train_scalogram_augmentation(preprocessor_params)
     dataset_kwargs = {
         "sequence_length": sequence_length,
         "sequence_stride": sequence_stride,
         "max_windows_per_person": max_windows_per_person,
     }
+    _log_metadata_values(augmentation_metadata)
 
     person_to_windows, person_to_label, unique_person_ids, unique_labels, class_counts = _prepare_sequence_inputs(
         X, y
@@ -429,8 +789,20 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
         test_split,
     )
     if manifest_spec is not None:
-        logger.log('fold_manifest_csv', manifest_spec['path'])
-        logger.log('fold_manifest_column', manifest_spec['fold_col'])
+        logger.log("fold_manifest_csv", manifest_spec["path"])
+        logger.log("fold_manifest_column", manifest_spec["fold_col"])
+    logger.log("split_scope", split_scope)
+
+    shared_metadata = _build_shared_preprocessor_metadata(
+        split_scope=split_scope,
+        batch_size=batch_size,
+        downsample_train=downsample_train,
+        max_windows_per_person=max_windows_per_person,
+        sequence_length=sequence_length,
+        sequence_stride=sequence_stride,
+        effective_seed=effective_seed,
+        augmentation_metadata=augmentation_metadata,
+    )
 
     if cv_folds and cv_folds > 1:
         if cv_repeats < 1:
@@ -440,12 +812,12 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
 
         cv_people = unique_person_ids
         cv_labels = unique_labels
-        holdout_test_people = np.array([])
-        holdout_test_labels = np.array([])
+        holdout_test_people = np.array([], dtype=str)
+        holdout_test_labels = np.array([], dtype=int)
 
         if manifest_spec is not None:
-            cv_people = np.asarray(manifest_spec['ordered_people'], dtype=str)
-            cv_labels = np.array([person_to_label[str(pid)] for pid in cv_people])
+            cv_people = np.asarray(manifest_spec["ordered_people"], dtype=str)
+            cv_labels = np.array(_labels_for_people(cv_people, person_to_label))
         elif test_split > 0:
             cv_people, holdout_test_people = train_test_split(
                 unique_person_ids,
@@ -453,8 +825,8 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
                 random_state=effective_seed,
                 stratify=unique_labels,
             )
-            cv_labels = np.array([person_to_label[str(pid)] for pid in cv_people])
-            holdout_test_labels = np.array([person_to_label[str(pid)] for pid in holdout_test_people])
+            cv_labels = np.array(_labels_for_people(cv_people, person_to_label))
+            holdout_test_labels = np.array(_labels_for_people(holdout_test_people, person_to_label))
 
         if cv_folds > len(cv_people):
             raise ValueError(
@@ -480,15 +852,13 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
         )
 
         fold_data = []
-        test_dataset = None
-        if len(holdout_test_people) > 0:
-            test_dataset = _make_sequence_dataset(
-                holdout_test_people,
-                person_to_windows,
-                person_to_label,
-                dataset_kwargs,
-                downsample=False,
-            )
+        test_dataset = _make_optional_sequence_dataset(
+            holdout_test_people,
+            person_to_windows,
+            person_to_label,
+            dataset_kwargs,
+            downsample=False,
+        )
         test_loader = _make_sequence_loader(test_dataset, batch_size, shuffle=False)
 
         if test_dataset is not None:
@@ -498,12 +868,10 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
             )
 
         for fold_idx, repeat_idx, fold_in_repeat, train_persons, val_persons in split_plan:
-            train_labels = [person_to_label[str(pid)] for pid in train_persons]
-            val_labels = [person_to_label[str(pid)] for pid in val_persons]
-            train_pos = int(sum(train_labels))
-            val_pos = int(sum(val_labels))
-            train_neg = len(train_labels) - train_pos
-            val_neg = len(val_labels) - val_pos
+            train_labels = _labels_for_people(train_persons, person_to_label)
+            val_labels = _labels_for_people(val_persons, person_to_label)
+            train_pos, train_neg = _summarize_binary_labels(train_labels)
+            val_pos, val_neg = _summarize_binary_labels(val_labels)
 
             train_dataset = _make_sequence_dataset(
                 train_persons,
@@ -511,6 +879,7 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
                 person_to_label,
                 dataset_kwargs,
                 downsample=downsample_train,
+                window_transform=train_window_transform,
             )
             val_dataset = _make_sequence_dataset(
                 val_persons,
@@ -520,22 +889,21 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
                 downsample=False,
             )
 
-            if cv_repeats > 1:
-                print(
-                    f"Repeat {repeat_idx}/{cv_repeats}, Fold {fold_in_repeat}/{cv_folds} "
-                    f"(global {fold_idx}/{total_cv_folds}): "
-                    f"Train {len(train_persons)} people ({train_dataset.num_windows} windows), "
-                    f"Val {len(val_persons)} people ({val_dataset.num_windows} windows)"
-                )
-            else:
-                print(
-                    f"Fold {fold_idx}/{cv_folds}: "
-                    f"Train {len(train_persons)} people ({train_dataset.num_windows} windows), "
-                    f"Val {len(val_persons)} people ({val_dataset.num_windows} windows)"
-                )
-            print(
-                f"Fold {fold_idx}: Train {train_pos} pos / {train_neg} neg | "
-                f"Val {val_pos} pos / {val_neg} neg"
+            _print_cv_fold_summary(
+                fold_idx=fold_idx,
+                cv_folds=cv_folds,
+                repeat_idx=repeat_idx,
+                cv_repeats=cv_repeats,
+                fold_in_repeat=fold_in_repeat,
+                total_cv_folds=total_cv_folds,
+                train_people_count=len(train_persons),
+                train_windows=train_dataset.num_windows,
+                val_people_count=len(val_persons),
+                val_windows=val_dataset.num_windows,
+                train_pos=train_pos,
+                train_neg=train_neg,
+                val_pos=val_pos,
+                val_neg=val_neg,
             )
 
             train_loader = _make_sequence_loader(
@@ -550,35 +918,34 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
                 shuffle=False,
             )
 
-            fold_data.append({
-                'train_loader': train_loader,
-                'val_loader': None if cv_fold_as_test else val_loader,
-                'test_loader': val_loader if cv_fold_as_test else test_loader,
-                'cv_fold': fold_idx,
-                'cv_fold_in_repeat': fold_in_repeat,
-                'cv_repeat_index': repeat_idx,
-                'cv_total_folds': total_cv_folds,
-            })
+            fold_data.append(
+                {
+                    "train_loader": train_loader,
+                    "val_loader": None if cv_fold_as_test else val_loader,
+                    "test_loader": val_loader if cv_fold_as_test else test_loader,
+                    "cv_fold": fold_idx,
+                    "cv_fold_in_repeat": fold_in_repeat,
+                    "cv_repeat_index": repeat_idx,
+                    "cv_total_folds": total_cv_folds,
+                }
+            )
 
-        metadata.update({
-            'cv_folds': cv_folds,
-            'cv_repeats': cv_repeats,
-            'cv_total_folds': total_cv_folds,
-            'batch_size': batch_size,
-            'downsample_train': downsample_train,
-            'max_windows_per_person': max_windows_per_person,
-            'sequence_length': sequence_length,
-            'sequence_stride': sequence_stride,
-            'cv_fold_as_test': cv_fold_as_test,
-            'seed': effective_seed,
-            'test_split': test_split,
-            'num_test_people': len(holdout_test_people),
-            'num_test_windows': test_dataset.num_windows if test_dataset is not None else 0,
-            'has_holdout_test': test_dataset is not None,
-            'fold_manifest_used': manifest_spec is not None,
-            'fold_manifest_csv': manifest_spec['path'] if manifest_spec is not None else None,
-            'fold_manifest_column': manifest_spec['fold_col'] if manifest_spec is not None else None,
-        })
+        metadata.update(
+            {
+                **shared_metadata,
+                "cv_folds": cv_folds,
+                "cv_repeats": cv_repeats,
+                "cv_total_folds": total_cv_folds,
+                "cv_fold_as_test": cv_fold_as_test,
+                "test_split": test_split,
+                "num_test_people": len(holdout_test_people),
+                "num_test_windows": test_dataset.num_windows if test_dataset is not None else 0,
+                "has_holdout_test": test_dataset is not None,
+                "fold_manifest_used": manifest_spec is not None,
+                "fold_manifest_csv": manifest_spec["path"] if manifest_spec is not None else None,
+                "fold_manifest_column": manifest_spec["fold_col"] if manifest_spec is not None else None,
+            }
+        )
 
         if test_dataset is not None and len(holdout_test_labels) > 0:
             _log_class_counts("test", holdout_test_labels.tolist())
@@ -598,10 +965,10 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
         )
     else:
         train_val_persons = unique_person_ids
-        test_persons = np.array([])
+        test_persons = np.array([], dtype=str)
 
     if val_split > 0:
-        train_val_labels = np.array([person_to_label[str(pid)] for pid in train_val_persons])
+        train_val_labels = np.array(_labels_for_people(train_val_persons, person_to_label))
         train_persons, val_persons = train_test_split(
             train_val_persons,
             test_size=val_split,
@@ -610,7 +977,7 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
         )
     else:
         train_persons = train_val_persons
-        val_persons = np.array([])
+        val_persons = np.array([], dtype=str)
 
     train_dataset = _make_sequence_dataset(
         train_persons,
@@ -618,25 +985,22 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
         person_to_label,
         dataset_kwargs,
         downsample=downsample_train,
+        window_transform=train_window_transform,
     )
-    val_dataset = None
-    if len(val_persons) > 0:
-        val_dataset = _make_sequence_dataset(
-            val_persons,
-            person_to_windows,
-            person_to_label,
-            dataset_kwargs,
-            downsample=False,
-        )
-    test_dataset = None
-    if len(test_persons) > 0:
-        test_dataset = _make_sequence_dataset(
-            test_persons,
-            person_to_windows,
-            person_to_label,
-            dataset_kwargs,
-            downsample=False,
-        )
+    val_dataset = _make_optional_sequence_dataset(
+        val_persons,
+        person_to_windows,
+        person_to_label,
+        dataset_kwargs,
+        downsample=False,
+    )
+    test_dataset = _make_optional_sequence_dataset(
+        test_persons,
+        person_to_windows,
+        person_to_label,
+        dataset_kwargs,
+        downsample=False,
+    )
 
     train_windows = train_dataset.num_windows
     val_windows = val_dataset.num_windows if val_dataset is not None else 0
@@ -657,35 +1021,33 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
     val_loader = _make_sequence_loader(val_dataset, batch_size, shuffle=False)
     test_loader = _make_sequence_loader(test_dataset, batch_size, shuffle=False)
 
-    metadata.update({
-        'num_train_samples': train_windows,
-        'num_val_samples': val_windows,
-        'num_test_samples': test_windows,
-        'num_train_windows': train_windows,
-        'num_val_windows': val_windows,
-        'num_test_windows': test_windows,
-        'num_train_people': len(train_persons),
-        'num_val_people': len(val_persons),
-        'num_test_people': len(test_persons),
-        'batch_size': batch_size,
-        'downsample_train': downsample_train,
-        'max_windows_per_person': max_windows_per_person,
-        'sequence_length': sequence_length,
-        'sequence_stride': sequence_stride,
-        'seed': effective_seed,
-    })
+    metadata.update(
+        {
+            **shared_metadata,
+            "num_train_samples": train_windows,
+            "num_val_samples": val_windows,
+            "num_test_samples": test_windows,
+            "num_train_windows": train_windows,
+            "num_val_windows": val_windows,
+            "num_test_windows": test_windows,
+            "num_train_people": len(train_persons),
+            "num_val_people": len(val_persons),
+            "num_test_people": len(test_persons),
+        }
+    )
 
     for split_name, split_labels in [
-        ('train', train_dataset.labels),
-        ('val', val_dataset.labels if val_dataset is not None else []),
-        ('test', test_dataset.labels if test_dataset is not None else []),
+        ("train", train_dataset.labels),
+        ("val", val_dataset.labels if val_dataset is not None else []),
+        ("test", test_dataset.labels if test_dataset is not None else []),
     ]:
         _log_class_counts(split_name, split_labels)
 
     data = {
-        'train_loader': train_loader,
-        'val_loader': val_loader,
-        'test_loader': test_loader,
+        "train_loader": train_loader,
+        "val_loader": val_loader,
+        "test_loader": test_loader,
     }
 
     return data, metadata
+
