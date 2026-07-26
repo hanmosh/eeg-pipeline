@@ -1,0 +1,4 @@
+window_size,peak_label,peak_model,peak_fusion_acc
+128,Specific,1D RawCNNLSTM,0.85
+256,Weighted,2D CNNGRU,0.875
+512,Specific,1D RawCNNGRU,0.875
