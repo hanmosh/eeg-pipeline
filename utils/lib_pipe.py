@@ -380,13 +380,16 @@ def run_pipeline_config(config, data_map, preprocessor_map, model_map, trainer_m
             save_model=save_model,
             log_filename_override=log_filename_override,
         )
-        sweep_results.append(
-            {
-                "label_type": label_type,
-                "config_id": run_result.get("config_id", label_config["id"]),
-                **_flatten_primary_metrics(run_result),
-            }
-        )
+        sweep_row = {
+            "label_type": label_type,
+            "config_id": run_result.get("config_id", label_config["id"]),
+            **_flatten_primary_metrics(run_result),
+        }
+        if "fold_results" in run_result:
+            sweep_row["fold_results"] = run_result["fold_results"]
+        if "seed_sweep_results" in run_result:
+            sweep_row["seed_sweep_results"] = run_result["seed_sweep_results"]
+        sweep_results.append(sweep_row)
 
     return {
         "config_id": config.get("id", "config"),

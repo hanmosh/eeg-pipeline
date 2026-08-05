@@ -1,6 +1,6 @@
 {
-    "id": "belonging_prediction_multimodal_raw_cnn_lstm_csv_v1_best_training",
-    "log_filename": "belonging_multimodal_results.csv",
+    "id": "belonging_prediction_multimodal_raw_cnn_lstm_csv_256_4_30hz_v1",
+    "log_filename": "belonging_results_multimodal_raw_cnn_lstm_csv_256_4_30hz.csv",
     "seed": 42,
     "deterministic": true,
     "label_sweep": {
@@ -13,8 +13,7 @@
         ]
     },
     "dataset_params": {
-        "name": "load_belonging_multimodal",
-        "eeg_loader_name": "raw_csv",
+        "name": "load_belonging_multimodal_raw_csvs",
         "raw_data_dir": "D:\\Cal-Poly-EEG-Data\\cleaned_v3",
         "labels_csv": "specific",
         "labels_lookup_csv": "data/belonging/andrews_40_subjects/AllNLPData.csv",
@@ -28,10 +27,19 @@
             "AF7",
             "AF8",
             "TP10"
+        ],
+        "bandpass_low_hz": 4,
+        "bandpass_high_hz": 30,
+        "sampling_rate_hz": 256,
+        "included_questions": [
+            100
+        ],
+        "uncapped_questions": [
+            100
         ]
     },
     "preprocessor_params": {
-        "name": "sequence_preprocessor",
+        "name": "tfrecord_preprocessor",
         "test_split": 0.0,
         "val_split": 0.0,
         "batch_size": 1,

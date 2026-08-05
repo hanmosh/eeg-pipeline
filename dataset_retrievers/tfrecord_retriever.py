@@ -1,10 +1,11 @@
+import csv
 import os
 import glob
 import re
-import csv
 import numpy as np
 
 from utils.log import logger
+from utils.text_utils import normalize_token
 
 
 _TF_IMPORT_ERROR = (
@@ -38,12 +39,11 @@ def _parse_filename(filename):
 
 
 def _resolve_question_mode(dataset_params):
-    raw_mode = dataset_params.get('question_mode', dataset_params.get('question_group', 'cognitive'))
+    raw_mode = dataset_params.get('question_mode', 'cognitive')
     if raw_mode is None:
         raw_mode = 'cognitive'
 
-    normalized = str(raw_mode).strip().lower()
-    normalized = normalized.replace('-', '').replace('_', '').replace(' ', '')
+    normalized = normalize_token(raw_mode)
 
     cognitive_aliases = {'cognitive', 'congnitive', 'congitive'}
     non_cognitive_aliases = {'noncognitive', 'noncongnitive', 'noncongitive'}
@@ -63,6 +63,50 @@ def _question_in_range(question_num, question_mode):
     if question_mode == 'cognitive':
         return 33 <= question_num < 39
     return 1 <= question_num < 33
+
+
+def _coerce_question_numbers(raw_value, setting_name):
+    if raw_value is None:
+        return set()
+    if isinstance(raw_value, (list, tuple, set)):
+        values = list(raw_value)
+    else:
+        values = [raw_value]
+
+    resolved = set()
+    for value in values:
+        try:
+            question_num = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{setting_name} must contain only positive integers.") from exc
+        if question_num <= 0:
+            raise ValueError(f"{setting_name} must contain only positive integers.")
+        resolved.add(question_num)
+    return resolved
+
+
+def _resolve_included_questions(dataset_params):
+    return _coerce_question_numbers(
+        dataset_params.get('included_questions'),
+        'dataset_params.included_questions',
+    )
+
+
+def _resolve_uncapped_questions(dataset_params):
+    return _coerce_question_numbers(
+        dataset_params.get('uncapped_questions'),
+        'dataset_params.uncapped_questions',
+    )
+
+
+def _question_selected(question_num, question_mode, included_questions):
+    return question_num in included_questions or _question_in_range(question_num, question_mode)
+
+
+def _resolve_effective_max_windows(question_num, max_windows_per_question, uncapped_questions):
+    if question_num in uncapped_questions:
+        return None
+    return max_windows_per_question
 
 
 def _coerce_bytes(value, field_name):
@@ -95,7 +139,7 @@ def _coerce_int(value, field_name):
 
 
 def _resolve_label_source(dataset_params):
-    labels_csv = dataset_params.get('labels_csv', dataset_params.get('lables_csv'))
+    labels_csv = dataset_params.get('labels_csv')
     if not labels_csv:
         return None
 
@@ -270,12 +314,12 @@ def _decode_scalograms(scalogram_value, shape, tfrecord_path):
     return array
 
 
-def _load_tfrecord_records_tensorflow(tfrecord_path, compression_type=None):
+def _load_tfrecord_records_tensorflow(tfrecord_path):
     tf = _get_tensorflow()
     if tf is None:
         return None
     records = []
-    dataset = tf.data.TFRecordDataset([tfrecord_path], compression_type=compression_type)
+    dataset = tf.data.TFRecordDataset([tfrecord_path])
     for raw_record in dataset:
         example = tf.train.Example()
         example.ParseFromString(bytes(raw_record.numpy()))
@@ -293,16 +337,7 @@ def _load_tfrecord_records_tensorflow(tfrecord_path, compression_type=None):
     return records
 
 
-def _load_tfrecord_records(tfrecord_path, compression_type=None):
-    if compression_type:
-        records = _load_tfrecord_records_tensorflow(tfrecord_path, compression_type=compression_type)
-        if records is None:
-            raise ImportError(
-                "TensorFlow is required to read compressed TFRecords. "
-                "Install TensorFlow or remove the compression setting."
-            )
-        return records
-
+def _load_tfrecord_records(tfrecord_path):
     records = None
     reader_available = False
     reader_error = None
@@ -310,7 +345,6 @@ def _load_tfrecord_records(tfrecord_path, compression_type=None):
         try:
             from tfrecord.tfrecord_loader import tfrecord_loader  # type: ignore
         except Exception:
-            # Newer tfrecord releases expose tfrecord_loader in tfrecord.reader.
             from tfrecord.reader import tfrecord_loader  # type: ignore
         reader_available = True
         records = list(tfrecord_loader(tfrecord_path, None, None))
@@ -335,23 +369,63 @@ def _load_tfrecord_records(tfrecord_path, compression_type=None):
     )
 
 
+def _resolve_recursive_tfrecord_search(dataset_params):
+    raw_value = dataset_params.get('tfrecords_recursive', False)
+    if isinstance(raw_value, bool):
+        return raw_value
+
+    normalized = str(raw_value).strip().lower()
+    if normalized in {'1', 'true', 'yes', 'y', 'on'}:
+        return True
+    if normalized in {'0', 'false', 'no', 'n', 'off', ''}:
+        return False
+
+    raise ValueError(
+        "dataset_params.tfrecords_recursive must be a boolean-like value."
+    )
+
+
+def _resolve_tfrecord_search_dirs(dataset_params):
+    raw_dir = dataset_params.get('tfrecords_dir')
+    if raw_dir is None:
+        raise ValueError("dataset_params must include 'tfrecords_dir'")
+
+    normalized = str(raw_dir).strip()
+    if not normalized:
+        raise ValueError("dataset_params.tfrecords_dir must be a non-empty path.")
+
+    return (normalized,)
+
+
 def load_belonging_tfrecords(dataset_params, metadata):
     """Load TFRecord scalograms and labels per participant session."""
-    tfrecords_dir = dataset_params.get('tfrecords_dir')
-    compression_type = dataset_params.get('tfrecords_compression')
+    tfrecord_search_dirs = _resolve_tfrecord_search_dirs(dataset_params)
+    recursive_search = _resolve_recursive_tfrecord_search(dataset_params)
     channels = dataset_params.get('channels', ['TP9', 'AF7', 'AF8', 'TP10'])
     question_mode = _resolve_question_mode(dataset_params)
     max_windows_per_question = _resolve_max_windows_per_question(dataset_params)
+    included_questions = _resolve_included_questions(dataset_params)
+    uncapped_questions = _resolve_uncapped_questions(dataset_params)
     csv_labels_map, label_col, label_source_text = _load_csv_labels_map(dataset_params)
 
-    if not tfrecords_dir:
-        raise ValueError("dataset_params must include 'tfrecords_dir'")
-    if not os.path.exists(tfrecords_dir):
-        raise FileNotFoundError(f"TFRecords dir not found: {tfrecords_dir}")
+    for search_dir in tfrecord_search_dirs:
+        if not os.path.exists(search_dir):
+            raise FileNotFoundError(f"TFRecords dir not found: {search_dir}")
 
-    tfrecord_paths = glob.glob(os.path.join(tfrecords_dir, '*.tfrecord'))
+    tfrecord_paths = []
+    for search_dir in tfrecord_search_dirs:
+        tfrecord_pattern = (
+            os.path.join(search_dir, '**', '*.tfrecord')
+            if recursive_search else os.path.join(search_dir, '*.tfrecord')
+        )
+        tfrecord_paths.extend(glob.glob(tfrecord_pattern, recursive=recursive_search))
+
+    tfrecord_paths = sorted(dict.fromkeys(tfrecord_paths))
     if not tfrecord_paths:
-        raise RuntimeError(f"No TFRecord files found in {tfrecords_dir}")
+        raise RuntimeError(
+            "No TFRecord files found in the configured TFRecord search directories."
+        )
+
     parsed_paths = []
     for tfrecord_path in tfrecord_paths:
         filename = os.path.basename(tfrecord_path)
@@ -371,6 +445,7 @@ def load_belonging_tfrecords(dataset_params, metadata):
     skipped_missing_people = set()
     skipped_forced_person_tfrecords = []
     skipped_forced_person_ids = set()
+    skipped_unreadable = []
     trimmed_question_tfrecords = 0
     trimmed_windows_removed = 0
 
@@ -379,23 +454,26 @@ def load_belonging_tfrecords(dataset_params, metadata):
     total_windows = 0
 
     for person_id, question_num, _timestamp, tfrecord_path in parsed_paths:
-        filename = os.path.basename(tfrecord_path)
         if person_id in _ALWAYS_SKIP_PERSON_IDS:
             skipped_forced_person_tfrecords.append(tfrecord_path)
             skipped_forced_person_ids.add(person_id)
             continue
-        if not _question_in_range(question_num, question_mode):
+
+        if not _question_selected(question_num, question_mode, included_questions):
             skipped_question.append(tfrecord_path)
             continue
-        records = _load_tfrecord_records(tfrecord_path, compression_type=compression_type)
+
+        try:
+            records = _load_tfrecord_records(tfrecord_path)
+        except Exception as exc:
+            skipped_unreadable.append((tfrecord_path, str(exc)))
+            continue
         if len(records) == 0:
             skipped_empty.append(tfrecord_path)
             continue
         if len(records) != 1:
             raise ValueError(
-                f"Expected exactly 1 record in {tfrecord_path}, found {len(records)}. "
-                "If the TFRecord was written with compression, set "
-                "`dataset_params.tfrecords_compression` to 'GZIP' or 'ZLIB'."
+                f"Expected exactly 1 record in {tfrecord_path}, found {len(records)}."
             )
         record = records[0]
 
@@ -425,10 +503,15 @@ def load_belonging_tfrecords(dataset_params, metadata):
         scalograms = np.asarray(scalograms, dtype=np.float32)
 
         n_windows, n_channels, height, width = scalograms.shape
-        if max_windows_per_question is not None and n_windows > max_windows_per_question:
+        effective_max_windows = _resolve_effective_max_windows(
+            question_num,
+            max_windows_per_question,
+            uncapped_questions,
+        )
+        if effective_max_windows is not None and n_windows > effective_max_windows:
             trimmed_question_tfrecords += 1
-            trimmed_windows_removed += int(n_windows - max_windows_per_question)
-            scalograms = scalograms[:max_windows_per_question]
+            trimmed_windows_removed += int(n_windows - effective_max_windows)
+            scalograms = scalograms[:effective_max_windows]
             n_windows = int(scalograms.shape[0])
         if num_channels is None:
             num_channels = n_channels
@@ -456,6 +539,14 @@ def load_belonging_tfrecords(dataset_params, metadata):
         raise ValueError(
             f"Configured channels length ({len(channels)}) does not match TFRecord channels ({num_channels})."
         )
+    if skipped_unreadable:
+        logger.log('skipped_unreadable_tfrecords', len(skipped_unreadable))
+        logger.log(
+            'skipped_unreadable_tfrecord_sample',
+            ' | '.join(
+                f"{os.path.basename(path)} :: {error}" for path, error in skipped_unreadable[:3]
+            ),
+        )
     if skipped_empty:
         logger.log('skipped_empty_tfrecords', len(skipped_empty))
     if skipped_question:
@@ -471,13 +562,17 @@ def load_belonging_tfrecords(dataset_params, metadata):
         logger.log('trimmed_windows_removed', trimmed_windows_removed)
     if not person_to_scalograms:
         raise RuntimeError(
-            "No non-empty TFRecord files found. "
-            "If the TFRecords were written with compression, set "
-            "`dataset_params.tfrecords_compression` to 'GZIP' or 'ZLIB'."
+            "No non-empty TFRecord files found in the configured TFRecord search directories."
         )
 
     person_ids = sorted(person_to_scalograms.keys())
-    scalograms_list = [np.concatenate(person_to_scalograms[pid], axis=0) for pid in person_ids]
+    scalograms_list = [
+        np.concatenate(
+            [np.asarray(segment, dtype=np.float32) for segment in person_to_scalograms[pid]],
+            axis=0,
+        )
+        for pid in person_ids
+    ]
     labels = [person_to_label[pid] for pid in person_ids]
 
     unique_labels, counts = np.unique(labels, return_counts=True)
@@ -486,6 +581,10 @@ def load_belonging_tfrecords(dataset_params, metadata):
     logger.log('total_windows', total_windows)
     logger.log('num_people', len(set(person_ids)))
     logger.log('question_mode', question_mode)
+    logger.log('included_questions', sorted(included_questions))
+    logger.log('uncapped_questions', sorted(uncapped_questions))
+    logger.log('tfrecords_recursive', recursive_search)
+    logger.log('tfrecord_search_dirs_count', len(tfrecord_search_dirs))
     if csv_labels_map is not None:
         logger.log('label_source', f"csv:{label_source_text}")
     else:
@@ -499,11 +598,16 @@ def load_belonging_tfrecords(dataset_params, metadata):
         'image_size': image_size,
         'num_classes': len(set(labels)),
         'question_mode': question_mode,
+        'included_questions': sorted(included_questions),
+        'uncapped_questions': sorted(uncapped_questions),
+        'tfrecords_recursive': recursive_search,
+        'tfrecord_search_dirs': list(tfrecord_search_dirs),
         'max_windows_per_question': max_windows_per_question,
         'label_col': label_col,
         'label_source': f"csv:{label_source_text}" if csv_labels_map is not None else 'tfrecord_label_field',
         'skipped_forced_person_tfrecords': len(skipped_forced_person_tfrecords),
         'skipped_forced_person_ids': len(skipped_forced_person_ids),
+        'skipped_unreadable_tfrecords': len(skipped_unreadable),
         'skipped_missing_label_tfrecords': len(skipped_missing_label),
         'skipped_missing_label_people': len(skipped_missing_people),
         'trimmed_question_tfrecords': trimmed_question_tfrecords,
@@ -517,3 +621,4 @@ def load_belonging_tfrecords(dataset_params, metadata):
     y = np.array(labels)
 
     return X, y, metadata
+

@@ -3,9 +3,10 @@ import os
 import numpy as np
 import pandas as pd
 
-from dataset_retrievers.tfrecord_retriever import load_belonging_tfrecords
 from dataset_retrievers.raw_csv_retriever import load_belonging_raw_csvs
+from dataset_retrievers.tfrecord_retriever import load_belonging_tfrecords
 from utils.log import logger
+from utils.text_utils import normalize_token
 
 
 LABEL_MODE_TO_COL = {
@@ -36,20 +37,22 @@ NOTEBOOK_WEIGHTED_DROP_COLUMNS = [
     "conf_prog",
 ]
 
-BELONGING_LABEL_DROP_COLUMNS = [
+BELONGING_SCORE_DROP_COLUMNS = [
     "membership",
     "accept_pos",
     "accept_neg_rev",
     "emotion",
     "trust_instr",
-    "conf_prog",
+]
+
+SPECIFIC_LABEL_DROP_COLUMNS = [
+    "membership",
 ]
 
 LABEL_CONSTRUCTION_FEATURES = {
-    # SpecificLabel is constructed from Q1, which is not present as an input feature here.
-    "SpecificLabel": [],
-    "CompositeLabel": BELONGING_LABEL_DROP_COLUMNS,
-    "FactorLabel": BELONGING_LABEL_DROP_COLUMNS,
+    "SpecificLabel": SPECIFIC_LABEL_DROP_COLUMNS,
+    "CompositeLabel": BELONGING_SCORE_DROP_COLUMNS,
+    "FactorLabel": BELONGING_SCORE_DROP_COLUMNS,
     "WeightedDiffLabel": NOTEBOOK_WEIGHTED_DROP_COLUMNS,
 }
 
@@ -59,10 +62,13 @@ NLP_DEFAULT_PATHS = [
 
 
 def _normalize_label_mode(value):
-    if value is None:
-        return ""
-    normalized = str(value).strip().lower()
-    return normalized.replace("-", "").replace("_", "").replace(" ", "")
+    return normalize_token(value)
+
+
+def _resolve_person_overlap(person_ids, nlp_df):
+    keep_indices = [idx for idx, pid in enumerate(person_ids) if pid in nlp_df.index]
+    missing_nlp_people = [pid for pid in person_ids if pid not in nlp_df.index]
+    return keep_indices, missing_nlp_people
 
 
 def _resolve_nlp_csv_path(dataset_params):
@@ -91,7 +97,7 @@ def _resolve_id_column(df):
 
 
 def _resolve_label_col(dataset_params):
-    raw = dataset_params.get("labels_csv", dataset_params.get("lables_csv"))
+    raw = dataset_params.get("labels_csv")
     normalized = _normalize_label_mode(raw)
     return LABEL_MODE_TO_COL.get(normalized)
 
@@ -102,26 +108,7 @@ def _resolve_active_survey_columns(all_columns, label_col):
     return [c for c in all_columns if c not in drop_cols]
 
 
-def _resolve_eeg_loader(dataset_params):
-    configured = dataset_params.get("eeg_loader_name", dataset_params.get("eeg_source"))
-    if configured is not None:
-        normalized = _normalize_label_mode(configured)
-        if normalized in {"tfrecord", "scalogram", "scalograms"}:
-            return load_belonging_tfrecords, "tfrecord"
-        if normalized in {"raw", "rawcsv"}:
-            return load_belonging_raw_csvs, "raw_csv"
-        raise ValueError(
-            f"Unsupported dataset_params.eeg_loader_name '{configured}'. "
-            "Use 'tfrecord' or 'raw_csv'."
-        )
-
-    if dataset_params.get("raw_data_dir"):
-        return load_belonging_raw_csvs, "raw_csv"
-    return load_belonging_tfrecords, "tfrecord"
-
-
-def _load_belonging_multimodal(dataset_params, metadata):
-    eeg_loader, eeg_loader_name = _resolve_eeg_loader(dataset_params)
+def _load_belonging_multimodal(dataset_params, metadata, *, eeg_loader, eeg_loader_name):
     X, y, metadata = eeg_loader(dataset_params, metadata)
     person_ids = [str(pid) for pid in X["person_ids"]]
     eeg_key = "scalograms" if "scalograms" in X else "windows"
@@ -137,17 +124,11 @@ def _load_belonging_multimodal(dataset_params, metadata):
     nlp_df = nlp_df.drop_duplicates(subset=[id_col], keep="last")
     nlp_df = nlp_df.set_index(id_col)
 
-    keep_indices = []
-    missing_nlp_people = []
-    for idx, pid in enumerate(person_ids):
-        if pid in nlp_df.index:
-            keep_indices.append(idx)
-        else:
-            missing_nlp_people.append(pid)
+    keep_indices, missing_nlp_people = _resolve_person_overlap(person_ids, nlp_df)
 
     if not keep_indices:
         raise RuntimeError(
-            "No participant overlap between TFRecords and NLP CSV after ID alignment."
+            "No participant overlap between EEG inputs and NLP CSV after ID alignment."
         )
 
     if missing_nlp_people:
@@ -165,12 +146,8 @@ def _load_belonging_multimodal(dataset_params, metadata):
         )
 
     survey_frame = nlp_df.loc[person_ids, active_survey_cols].apply(pd.to_numeric, errors="coerce")
-
     survey_features = survey_frame.to_numpy(dtype=np.float32)
-    survey_features_by_person = {
-        pid: survey_features[idx]
-        for idx, pid in enumerate(person_ids)
-    }
+    survey_features_by_person = dict(zip(person_ids, survey_features))
 
     if label_col and label_col in nlp_df.columns:
         nlp_labels = pd.to_numeric(nlp_df.loc[person_ids, label_col], errors="coerce")
@@ -181,7 +158,7 @@ def _load_belonging_multimodal(dataset_params, metadata):
         logger.log("nlp_label_mismatch_count", mismatch_count)
         if mismatch_count > 0:
             raise ValueError(
-                f"Label mismatch between TFRecord labels and NLP column '{label_col}' "
+                f"Label mismatch between EEG labels and NLP column '{label_col}' "
                 f"for {mismatch_count} participant(s)."
             )
 
@@ -210,17 +187,19 @@ def _load_belonging_multimodal(dataset_params, metadata):
     return X, y, metadata
 
 
-def load_belonging_multimodal(dataset_params, metadata):
-    return _load_belonging_multimodal(dataset_params, metadata)
-
-
 def load_belonging_multimodal_tfrecords(dataset_params, metadata):
-    params = dict(dataset_params)
-    params.setdefault("eeg_loader_name", "tfrecord")
-    return _load_belonging_multimodal(params, metadata)
+    return _load_belonging_multimodal(
+        dataset_params,
+        metadata,
+        eeg_loader=load_belonging_tfrecords,
+        eeg_loader_name="tfrecord",
+    )
 
 
 def load_belonging_multimodal_raw_csvs(dataset_params, metadata):
-    params = dict(dataset_params)
-    params.setdefault("eeg_loader_name", "raw_csv")
-    return _load_belonging_multimodal(params, metadata)
+    return _load_belonging_multimodal(
+        dataset_params,
+        metadata,
+        eeg_loader=load_belonging_raw_csvs,
+        eeg_loader_name="raw_csv",
+    )

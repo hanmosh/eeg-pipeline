@@ -4,14 +4,18 @@ import re
 
 import numpy as np
 import pandas as pd
+from scipy.signal import butter, sosfiltfilt
 
 from utils.log import logger
 from dataset_retrievers.tfrecord_retriever import (
     _ALWAYS_SKIP_PERSON_IDS,
     _load_csv_labels_map,
-    _question_in_range,
+    _question_selected,
+    _resolve_effective_max_windows,
+    _resolve_included_questions,
     _resolve_max_windows_per_question,
     _resolve_question_mode,
+    _resolve_uncapped_questions,
 )
 
 
@@ -48,12 +52,80 @@ def _segment_signal(samples, samples_per_window, window_stride):
     return np.asarray(windows, dtype=np.float32)
 
 
+def _resolve_signal_filter(dataset_params):
+    low_hz = dataset_params.get("bandpass_low_hz")
+    high_hz = dataset_params.get("bandpass_high_hz")
+    if low_hz is None and high_hz is None:
+        return None
+
+    sample_rate_hz = float(dataset_params.get("sampling_rate_hz", 256.0))
+    if sample_rate_hz <= 0:
+        raise ValueError("dataset_params.sampling_rate_hz must be greater than zero.")
+
+    nyquist_hz = sample_rate_hz / 2.0
+    low_hz = float(low_hz) if low_hz is not None else None
+    high_hz = float(high_hz) if high_hz is not None else None
+
+    if low_hz is not None and low_hz <= 0:
+        raise ValueError("dataset_params.bandpass_low_hz must be greater than zero.")
+    if high_hz is not None and high_hz <= 0:
+        raise ValueError("dataset_params.bandpass_high_hz must be greater than zero.")
+    if low_hz is not None and low_hz >= nyquist_hz:
+        raise ValueError(
+            "dataset_params.bandpass_low_hz must be below the Nyquist frequency."
+        )
+    if high_hz is not None and high_hz >= nyquist_hz:
+        raise ValueError(
+            "dataset_params.bandpass_high_hz must be below the Nyquist frequency."
+        )
+    if low_hz is not None and high_hz is not None and low_hz >= high_hz:
+        raise ValueError(
+            "dataset_params.bandpass_low_hz must be lower than bandpass_high_hz."
+        )
+
+    if low_hz is not None and high_hz is not None:
+        normalized_cutoff = [low_hz / nyquist_hz, high_hz / nyquist_hz]
+        filter_type = "bandpass"
+    elif low_hz is not None:
+        normalized_cutoff = low_hz / nyquist_hz
+        filter_type = "highpass"
+    else:
+        normalized_cutoff = high_hz / nyquist_hz
+        filter_type = "lowpass"
+
+    return {
+        "sample_rate_hz": sample_rate_hz,
+        "low_hz": low_hz,
+        "high_hz": high_hz,
+        "filter_type": filter_type,
+        "sos": butter(4, normalized_cutoff, btype=filter_type, output="sos"),
+    }
+
+
+def _apply_signal_filter(samples, signal_filter, csv_path):
+    if signal_filter is None:
+        return samples
+
+    try:
+        filtered = sosfiltfilt(signal_filter["sos"], samples, axis=0)
+    except ValueError as exc:
+        low_hz = signal_filter.get("low_hz")
+        high_hz = signal_filter.get("high_hz")
+        raise ValueError(
+            f"Unable to apply raw EEG filter ({low_hz}, {high_hz}) Hz to {csv_path}: {exc}"
+        ) from exc
+    return np.asarray(filtered, dtype=np.float32)
+
+
 def load_belonging_raw_csvs(dataset_params, metadata):
     raw_data_dir = dataset_params.get("raw_data_dir")
     channels = dataset_params.get("channels", ["TP9", "AF7", "AF8", "TP10"])
     question_mode = _resolve_question_mode(dataset_params)
     max_windows_per_question = _resolve_max_windows_per_question(dataset_params)
+    included_questions = _resolve_included_questions(dataset_params)
+    uncapped_questions = _resolve_uncapped_questions(dataset_params)
     csv_labels_map, label_col, label_source_text = _load_csv_labels_map(dataset_params)
+    signal_filter = _resolve_signal_filter(dataset_params)
 
     if not raw_data_dir:
         raise ValueError("dataset_params must include 'raw_data_dir'")
@@ -67,11 +139,6 @@ def load_belonging_raw_csvs(dataset_params, metadata):
     if window_stride <= 0:
         raise ValueError("dataset_params.window_stride must be greater than zero.")
 
-    max_people = dataset_params.get("max_people")
-    if max_people is not None:
-        max_people = int(max_people)
-        if max_people <= 0:
-            raise ValueError("dataset_params.max_people must be greater than zero.")
 
     csv_paths = glob.glob(os.path.join(raw_data_dir, "**", "per_question", "eeg_*.csv"), recursive=True)
     if not csv_paths:
@@ -102,7 +169,7 @@ def load_belonging_raw_csvs(dataset_params, metadata):
             skipped_forced_person_csvs.append(csv_path)
             skipped_forced_person_ids.add(person_id)
             continue
-        if not _question_in_range(question_num, question_mode):
+        if not _question_selected(question_num, question_mode, included_questions):
             skipped_question.append(csv_path)
             continue
 
@@ -116,8 +183,6 @@ def load_belonging_raw_csvs(dataset_params, metadata):
             raise ValueError(
                 "Raw CSV loading requires dataset_params.labels_csv / labels_lookup_csv."
             )
-        if max_people is not None and person_id not in person_to_label and len(person_to_label) >= max_people:
-            continue
 
         frame = pd.read_csv(csv_path)
         missing_channels = [channel for channel in channels if channel not in frame.columns]
@@ -127,15 +192,21 @@ def load_belonging_raw_csvs(dataset_params, metadata):
             )
 
         samples = frame[channels].to_numpy(dtype=np.float32)
+        samples = _apply_signal_filter(samples, signal_filter, csv_path)
         windows = _segment_signal(samples, samples_per_window, window_stride)
         if windows.shape[0] == 0:
             skipped_short_csvs.append(csv_path)
             continue
 
-        if max_windows_per_question is not None and windows.shape[0] > max_windows_per_question:
+        effective_max_windows = _resolve_effective_max_windows(
+            question_num,
+            max_windows_per_question,
+            uncapped_questions,
+        )
+        if effective_max_windows is not None and windows.shape[0] > effective_max_windows:
             trimmed_question_csvs += 1
-            trimmed_windows_removed += int(windows.shape[0] - max_windows_per_question)
-            windows = windows[:max_windows_per_question]
+            trimmed_windows_removed += int(windows.shape[0] - effective_max_windows)
+            windows = windows[:effective_max_windows]
 
         total_windows += int(windows.shape[0])
         person_to_windows.setdefault(person_id, []).append(windows)
@@ -162,7 +233,10 @@ def load_belonging_raw_csvs(dataset_params, metadata):
         raise RuntimeError("No raw EEG windows were loaded from the cleaned CSV files.")
 
     person_ids = sorted(person_to_windows.keys())
-    windows_list = [np.concatenate(person_to_windows[pid], axis=0) for pid in person_ids]
+    windows_list = [
+        np.concatenate([np.asarray(segment, dtype=np.float32) for segment in person_to_windows[pid]], axis=0)
+        for pid in person_ids
+    ]
     labels = [person_to_label[pid] for pid in person_ids]
 
     unique_labels, counts = np.unique(labels, return_counts=True)
@@ -171,9 +245,16 @@ def load_belonging_raw_csvs(dataset_params, metadata):
     logger.log("total_windows", total_windows)
     logger.log("num_people", len(set(person_ids)))
     logger.log("question_mode", question_mode)
+    logger.log("included_questions", sorted(included_questions))
+    logger.log("uncapped_questions", sorted(uncapped_questions))
     logger.log("samples_per_window", samples_per_window)
     logger.log("window_stride", window_stride)
     logger.log("label_source", f"csv:{label_source_text}")
+    if signal_filter is not None:
+        logger.log("sampling_rate_hz", signal_filter["sample_rate_hz"])
+        logger.log("bandpass_low_hz", signal_filter["low_hz"])
+        logger.log("bandpass_high_hz", signal_filter["high_hz"])
+        logger.log("signal_filter_type", signal_filter["filter_type"])
 
     metadata.update({
         "num_people": len(set(person_ids)),
@@ -183,6 +264,8 @@ def load_belonging_raw_csvs(dataset_params, metadata):
         "sample_length": samples_per_window,
         "num_classes": len(set(labels)),
         "question_mode": question_mode,
+        "included_questions": sorted(included_questions),
+        "uncapped_questions": sorted(uncapped_questions),
         "max_windows_per_question": max_windows_per_question,
         "label_col": label_col,
         "label_source": f"csv:{label_source_text}",
@@ -191,6 +274,10 @@ def load_belonging_raw_csvs(dataset_params, metadata):
         "trimmed_question_csvs": trimmed_question_csvs,
         "trimmed_windows_removed": trimmed_windows_removed,
         "input_type": "raw",
+        "sampling_rate_hz": signal_filter["sample_rate_hz"] if signal_filter is not None else None,
+        "bandpass_low_hz": signal_filter["low_hz"] if signal_filter is not None else None,
+        "bandpass_high_hz": signal_filter["high_hz"] if signal_filter is not None else None,
+        "signal_filter_type": signal_filter["filter_type"] if signal_filter is not None else None,
     })
 
     X = {

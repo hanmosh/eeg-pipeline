@@ -1,6 +1,6 @@
 {
-    "id": "belonging_prediction_multimodal_cnn_gru_tfrecord_v1_fusion_search",
-    "log_filename": "belonging_multimodal_results.csv",
+    "id": "belonging_prediction_multimodal_raw_chrononet_csv_512_full_compare_v1",
+    "log_filename": "belonging_results_multimodal_raw_chrononet_csv_512_full_compare.csv",
     "seed": 42,
     "deterministic": true,
     "label_sweep": {
@@ -13,13 +13,15 @@
         ]
     },
     "dataset_params": {
-        "name": "load_belonging_multimodal_tfrecords",
-        "tfrecords_dir": "D:\\merged\\cleaned\\merged_clean_tfrecords",
+        "name": "load_belonging_multimodal_raw_csvs",
+        "raw_data_dir": "D:\\Cal-Poly-EEG-Data\\cleaned_v3",
         "labels_csv": "specific",
         "labels_lookup_csv": "data/belonging/andrews_40_subjects/AllNLPData.csv",
         "nlp_csv": "data/belonging/andrews_40_subjects/AllNLPData.csv",
         "question_mode": "non cognitive",
-        "max_windows_per_question": 23,
+        "max_windows_per_question": 11,
+        "samples_per_window": 512,
+        "window_stride": 256,
         "channels": [
             "TP9",
             "AF7",
@@ -40,18 +42,25 @@
         "seed": 42
     },
     "model_params": {
-        "name": "CNNGRU",
+        "name": "RawChronoNet",
         "conv_filters": 8,
+        "conv_kernel_sizes": [
+            2,
+            4,
+            8
+        ],
+        "conv_stride": 2,
         "num_blocks": 2,
-        "gru_hidden_size": 8,
-        "dropout_rate": 0.2,
+        "gru_hidden_size": 32,
+        "dropout_rate": 0.4,
         "use_batch_norm": true,
-        "window_batch_size": 8
+        "window_batch_size": 8,
+        "truncate_bptt": 64
     },
     "trainer_params": {
         "name": "BelongingMultimodalTrainer",
         "num_epochs": 20,
-        "learning_rate": 0.001,
+        "learning_rate": 0.0001,
         "weight_decay": 0.0001,
         "patience": 5,
         "decision_threshold": 0.5,
@@ -63,15 +72,5 @@
         "gated_confidence_margin": 0.0,
         "survey_seed": 42
     },
-    "grid_search": {
-        "metric": "fusion_accuracy",
-        "score_aggregation": "mean",
-        "resume": true,
-        "log_filename": "grid_search_belonging_config_multimodal_cnn_gru_tfrecord_fusion_params.csv",
-        "state_file": "grid_search_state_belonging_config_multimodal_cnn_gru_tfrecord_fusion_params.json",
-        "params": {
-            "trainer_params.survey_weight": [0.45, 0.5, 0.55, 0.6, 0.65],
-            "trainer_params.fusion_threshold": [0.45, 0.5, 0.55]
-        }
-    }
+    "model_artifact_family": "512"
 }

@@ -3,7 +3,7 @@ import os
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import RepeatedStratifiedKFold, StratifiedKFold, train_test_split
+from sklearn.model_selection import StratifiedKFold, train_test_split
 import torch
 from torch.utils.data import Dataset, DataLoader
 
@@ -16,8 +16,6 @@ DEFAULT_FOLD_MANIFEST_COLUMNS = {
     "FactorLabel": "factor_fold",
     "WeightedDiffLabel": "weighted_fold",
 }
-
-DEFAULT_SPLIT_SCOPE = "inter_subject"
 
 
 class TrainScalogramSpecAugment:
@@ -306,47 +304,34 @@ def _resolve_active_label_col(metadata):
     return None
 
 
-def _resolve_fold_manifest_column(preprocessor_params, metadata):
-    explicit = preprocessor_params.get("fold_manifest_column")
-    if explicit:
-        return str(explicit)
-
+def _resolve_fold_manifest_column(metadata):
     label_col = _resolve_active_label_col(metadata)
-    column_map = preprocessor_params.get("fold_manifest_columns")
-    if isinstance(column_map, dict) and label_col in column_map:
-        return str(column_map[label_col])
-
-    if label_col in DEFAULT_FOLD_MANIFEST_COLUMNS:
-        return DEFAULT_FOLD_MANIFEST_COLUMNS[label_col]
-
     if label_col is None:
         raise ValueError(
             "fold_manifest_csv requires metadata to include an active label column. "
             "Expected metadata['label_col'] or metadata['survey_label_col']."
         )
+    if label_col not in DEFAULT_FOLD_MANIFEST_COLUMNS:
+        raise ValueError(
+            f"No default fold-manifest column mapping found for label column '{label_col}'."
+        )
+    return DEFAULT_FOLD_MANIFEST_COLUMNS[label_col]
 
-    raise ValueError(
-        f"No fold-manifest column mapping found for label column '{label_col}'. "
-        "Set preprocessor_params.fold_manifest_column or fold_manifest_columns."
-    )
 
-
-def _load_fold_manifest_spec(preprocessor_params, metadata, unique_person_ids, cv_folds, cv_repeats, test_split):
+def _load_fold_manifest_spec(preprocessor_params, metadata, unique_person_ids, cv_folds, test_split):
     manifest_path = preprocessor_params.get("fold_manifest_csv")
     if not manifest_path:
         return None
 
     if cv_folds <= 1:
         raise ValueError("fold_manifest_csv requires preprocessor_params.cv_folds > 1.")
-    if cv_repeats != 1:
-        raise ValueError("fold_manifest_csv currently supports only cv_repeats = 1.")
     if float(test_split) != 0.0:
         raise ValueError("fold_manifest_csv currently requires test_split = 0.0.")
     if not os.path.exists(manifest_path):
         raise FileNotFoundError(f"Fold manifest not found: {manifest_path}")
 
-    id_col = str(preprocessor_params.get("fold_manifest_id_col", "FileName"))
-    fold_col = _resolve_fold_manifest_column(preprocessor_params, metadata)
+    id_col = "FileName"
+    fold_col = _resolve_fold_manifest_column(metadata)
 
     manifest_df = pd.read_csv(manifest_path)
     if id_col not in manifest_df.columns:
@@ -426,21 +411,6 @@ def _build_generator(seed_value):
     return gen
 
 
-def _normalize_split_scope(value):
-    if value is None:
-        return DEFAULT_SPLIT_SCOPE
-
-    normalized = str(value).strip().lower()
-    normalized = normalized.replace("-", "").replace("_", "").replace(" ", "")
-    if normalized in {"intersubject", "participantwise", "personwise", "subjectwise"}:
-        return "inter_subject"
-
-    raise ValueError(
-        "Only inter-subject splitting is supported. Remove preprocessor_params.split_scope "
-        "or set it to 'inter_subject'."
-    )
-
-
 def _prepare_sequence_inputs(X, y):
     scalograms_list = X.get("scalograms")
     if scalograms_list is None:
@@ -499,7 +469,7 @@ def _make_sequence_loader(dataset, batch_size, shuffle, *, generator=None):
     return DataLoader(dataset, **loader_kwargs)
 
 
-def _build_cv_split_plan(manifest_spec, cv_people, cv_labels, cv_folds, cv_repeats, effective_seed):
+def _build_cv_split_plan(manifest_spec, cv_people, cv_labels, cv_folds, effective_seed):
     if manifest_spec is not None:
         split_plan = []
         ordered_people = manifest_spec["ordered_people"]
@@ -512,22 +482,6 @@ def _build_cv_split_plan(manifest_spec, cv_people, cv_labels, cv_folds, cv_repea
             )
             split_plan.append((fold_num, 1, fold_num, train_persons, val_persons))
         return cv_folds, split_plan
-
-    if cv_repeats > 1:
-        splitter = RepeatedStratifiedKFold(
-            n_splits=cv_folds,
-            n_repeats=cv_repeats,
-            random_state=effective_seed,
-        )
-        total_cv_folds = cv_folds * cv_repeats
-        split_plan = []
-        for fold_idx, (train_idx, val_idx) in enumerate(splitter.split(cv_people, cv_labels), start=1):
-            repeat_idx = ((fold_idx - 1) // cv_folds) + 1
-            fold_in_repeat = ((fold_idx - 1) % cv_folds) + 1
-            train_persons = cv_people[train_idx]
-            val_persons = cv_people[val_idx]
-            split_plan.append((fold_idx, repeat_idx, fold_in_repeat, train_persons, val_persons))
-        return total_cv_folds, split_plan
 
     splitter = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=effective_seed)
     split_plan = []
@@ -693,7 +647,6 @@ def _log_metadata_values(values):
 
 def _build_shared_preprocessor_metadata(
     *,
-    split_scope,
     batch_size,
     downsample_train,
     max_windows_per_person,
@@ -703,7 +656,7 @@ def _build_shared_preprocessor_metadata(
     augmentation_metadata,
 ):
     return {
-        "split_scope": split_scope,
+        "split_scope": "inter_subject",
         "batch_size": batch_size,
         "downsample_train": downsample_train,
         "max_windows_per_person": max_windows_per_person,
@@ -718,10 +671,6 @@ def _print_cv_fold_summary(
     *,
     fold_idx,
     cv_folds,
-    repeat_idx,
-    cv_repeats,
-    fold_in_repeat,
-    total_cv_folds,
     train_people_count,
     train_windows,
     val_people_count,
@@ -731,19 +680,11 @@ def _print_cv_fold_summary(
     val_pos,
     val_neg,
 ):
-    if cv_repeats > 1:
-        print(
-            f"Repeat {repeat_idx}/{cv_repeats}, Fold {fold_in_repeat}/{cv_folds} "
-            f"(global {fold_idx}/{total_cv_folds}): "
-            f"Train {train_people_count} people ({train_windows} windows), "
-            f"Val {val_people_count} people ({val_windows} windows)"
-        )
-    else:
-        print(
-            f"Fold {fold_idx}/{cv_folds}: "
-            f"Train {train_people_count} people ({train_windows} windows), "
-            f"Val {val_people_count} people ({val_windows} windows)"
-        )
+    print(
+        f"Fold {fold_idx}/{cv_folds}: "
+        f"Train {train_people_count} people ({train_windows} windows), "
+        f"Val {val_people_count} people ({val_windows} windows)"
+    )
     print(
         f"Fold {fold_idx}: Train {train_pos} pos / {train_neg} neg | "
         f"Val {val_pos} pos / {val_neg} neg"
@@ -758,7 +699,7 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
     val_split = preprocessor_params.get("val_split", 0.2)
     batch_size = preprocessor_params.get("batch_size", 16)
     cv_folds = preprocessor_params.get("cv_folds", 0)
-    cv_repeats = int(preprocessor_params.get("cv_repeats", 1))
+    cv_repeats = 1
     downsample_train = preprocessor_params.get("downsample_train", False)
     max_windows_per_person = preprocessor_params.get("max_windows_per_person", None)
     sequence_length = preprocessor_params.get("sequence_length", None)
@@ -766,7 +707,7 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
     cv_fold_as_test = bool(preprocessor_params.get("cv_fold_as_test", False))
     seed = preprocessor_params.get("seed", None)
     effective_seed = int(seed) if seed is not None else None
-    split_scope = _normalize_split_scope(preprocessor_params.get("split_scope"))
+    split_scope = "inter_subject"
 
     train_window_transform, augmentation_metadata = _resolve_train_scalogram_augmentation(preprocessor_params)
     dataset_kwargs = {
@@ -785,7 +726,6 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
         metadata,
         unique_person_ids,
         cv_folds,
-        cv_repeats,
         test_split,
     )
     if manifest_spec is not None:
@@ -794,7 +734,6 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
     logger.log("split_scope", split_scope)
 
     shared_metadata = _build_shared_preprocessor_metadata(
-        split_scope=split_scope,
         batch_size=batch_size,
         downsample_train=downsample_train,
         max_windows_per_person=max_windows_per_person,
@@ -805,8 +744,6 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
     )
 
     if cv_folds and cv_folds > 1:
-        if cv_repeats < 1:
-            raise ValueError("cv_repeats must be >= 1 when cv_folds > 1.")
         if test_split < 0 or test_split >= 1:
             raise ValueError("test_split must be in [0, 1) when cv_folds > 1.")
 
@@ -847,7 +784,6 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
             cv_people,
             cv_labels,
             cv_folds,
-            cv_repeats,
             effective_seed,
         )
 
@@ -892,10 +828,6 @@ def tfrecord_preprocessor(preprocessor_params, X, y, metadata):
             _print_cv_fold_summary(
                 fold_idx=fold_idx,
                 cv_folds=cv_folds,
-                repeat_idx=repeat_idx,
-                cv_repeats=cv_repeats,
-                fold_in_repeat=fold_in_repeat,
-                total_cv_folds=total_cv_folds,
                 train_people_count=len(train_persons),
                 train_windows=train_dataset.num_windows,
                 val_people_count=len(val_persons),

@@ -9,7 +9,6 @@ from architectures.raw_cnn_lstm import RawCNNLSTM
 from architectures.raw_chrononet import RawChronoNet
 from dataset_retrievers.raw_csv_retriever import load_belonging_raw_csvs
 from dataset_retrievers.tfrecord_multimodal_retriever import (
-    load_belonging_multimodal,
     load_belonging_multimodal_raw_csvs,
     load_belonging_multimodal_tfrecords,
 )
@@ -22,14 +21,12 @@ from trainers.belonging_trainer import BelongingTrainer
 DATA_MAP = {
     "load_belonging_tfrecords": load_belonging_tfrecords,
     "load_belonging_raw_csvs": load_belonging_raw_csvs,
-    "load_belonging_multimodal": load_belonging_multimodal,
     "load_belonging_multimodal_raw_csvs": load_belonging_multimodal_raw_csvs,
     "load_belonging_multimodal_tfrecords": load_belonging_multimodal_tfrecords,
 }
 
 PREPROCESSOR_MAP = {
     "tfrecord_preprocessor": tfrecord_preprocessor,
-    "sequence_preprocessor": tfrecord_preprocessor,
 }
 
 MODEL_MAP = {

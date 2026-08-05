@@ -30,21 +30,29 @@ python pipeline.py config_file results_file [-m] [-v]
 - `-m`: Optional flag to save trained models and their relevant information. (Default: False)
 - `-v`: Optional flag to enable verbose output during execution. (Default: False)
 
-### Configuration
-The configuration JSON file specifies the parameters for data loading, preprocessing, model selection, and training.
-Refer to the example configuration files in the `run_configs/` directory for guidance on structuring your own configurations, but the file must include the following keys:
-- `id`: Unique identifier for the run.
-- `log_filename`: Filename for logging results.
-- `dataset_params`: Parameters for dataset loading. This should be a dictionary that will be passed to your implemented data loader.
-    - `name`: Name of the dataset retriever to use (must match a key in the DATA_MAP).
-- `preprocessor_params`: Parameters for data preprocessing. This should be a dictionary that will be passed to your implemented preprocessor.
-    - `name`: Name of the preprocessor to use (must match a key in the PREPROCESSOR_MAP).
-- `model_params`: Parameters for model selection. This should be a dictionary that will be passed to your implemented model.
-    - `name`: Name of the model architecture to use (must match a key in the MODEL_MAP).
-- `trainer_params`: Parameters for model training. This should be a dictionary that will be passed to your implemented trainer.
-    - `name`: Name of the trainer to use (must match a key in the TRAINER_MAP).
+To run the saved multimodal suites, use one of:
+```bash
+python run_multimodal_full_128_suite.py
+python run_multimodal_full_256_suite.py
+python run_multimodal_full_512_suite.py
+```
+You can also add tags to those commands to do things like saving the models. 
 
-As noted, **MAKE SURE** that the names specified in the configuration file are present in the respective mapping dictionaries in `pipeline.py`. This is crucial for the pipeline to correctly identify and utilize the appropriate components. Ensure that your custom implementations are properly imported and registered in these mapping dictionaries.
+These suites utilize a labeling method that was derived from the student responses.
+
+### Configuration
+- `id`: run name.
+- `log_filename`: CSV log file.
+- `seed`, `deterministic`: reproducibility settings.
+- `model_artifact_family`: saved-model folder label.
+- `label_sweep.{enabled,label_types}`: runs the label set in one config.
+- `seed_sweep.{enabled,seeds}`: optional repeated runs over multiple seeds.
+- `dataset_params`: loader name, label source, survey CSV path, EEG source/path settings, question filters, channel list, window sizes, and raw-signal filter settings.
+- `preprocessor_params`: split/CV settings, batch size, train downsampling/window caps, seed, and optional train-only `specaugment` / `gaussian_noise` blocks.
+- `model_params`: model name plus convolution, hidden-size, dropout, batch-norm, and sequence-window settings.
+- `trainer_params`: trainer name plus epochs, learning rate, weight decay, patience, decision threshold, validation use, and multimodal fusion settings.
+
+Names must match the maps in `utils/pipeline_setup.py`.
 
 ## Building out the Pipeline
 The pipeline is designed to be modular, and it is up to you to implement the specific components. You will need to create your own data loaders, preprocessors, models, and trainers. The pipeline expects these components to adhere to specific interfaces, which you can find in the example implementations provided. Explanations of these components are as follows:
