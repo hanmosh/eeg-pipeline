@@ -1,0 +1,137 @@
+Model Name: multimodal\2D_ChronoNet\Weighted\CV_3
+Model Details:
+ChronoNet(
+  (blocks): ModuleList(
+    (0): ChronoBlock2D(
+      (convs): ModuleList(
+        (0): Conv2dSame(
+          (conv): Conv2d(4, 8, kernel_size=(2, 2), stride=(2, 2))
+        )
+        (1): Conv2dSame(
+          (conv): Conv2d(4, 8, kernel_size=(4, 4), stride=(2, 2))
+        )
+        (2): Conv2dSame(
+          (conv): Conv2d(4, 8, kernel_size=(8, 8), stride=(2, 2))
+        )
+      )
+      (relu): ReLU()
+    )
+    (1): ChronoBlock2D(
+      (convs): ModuleList(
+        (0): Conv2dSame(
+          (conv): Conv2d(24, 8, kernel_size=(2, 2), stride=(2, 2))
+        )
+        (1): Conv2dSame(
+          (conv): Conv2d(24, 8, kernel_size=(4, 4), stride=(2, 2))
+        )
+        (2): Conv2dSame(
+          (conv): Conv2d(24, 8, kernel_size=(8, 8), stride=(2, 2))
+        )
+      )
+      (relu): ReLU()
+    )
+  )
+  (bn): BatchNorm2d(24, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+  (gru1): GRU(24, 16, batch_first=True)
+  (gru2): GRU(16, 16, batch_first=True)
+  (gru3): GRU(32, 16, batch_first=True)
+  (gru4): GRU(48, 16, batch_first=True)
+  (dropout): Dropout(p=0.3, inplace=False)
+  (fc): Linear(in_features=16, out_features=2, bias=True)
+  (temporal_gru): GRU(16, 16, batch_first=True)
+  (temporal_dropout): Dropout(p=0.3, inplace=False)
+  (temporal_fc): Linear(in_features=16, out_features=2, bias=True)
+)
+
+Configuration:
+{
+    "id": "belonging_prediction_multimodal_tfrecord_v1_best_training_weighted",
+    "log_filename": "belonging_multimodal_results.csv",
+    "seed": 42,
+    "deterministic": true,
+    "label_sweep": {
+        "enabled": true,
+        "label_types": [
+            "specific",
+            "composite",
+            "factor",
+            "weighted"
+        ]
+    },
+    "seed_sweep": {
+        "enabled": false,
+        "seeds": [
+            13,
+            42,
+            77
+        ]
+    },
+    "dataset_params": {
+        "name": "load_belonging_multimodal_tfrecords",
+        "tfrecords_dir": "D:\\merged\\cleaned\\merged_clean_tfrecords",
+        "labels_csv": "weighted",
+        "labels_lookup_csv": "data/belonging/andrews_40_subjects/AllNLPData.csv",
+        "nlp_csv": "data/belonging/andrews_40_subjects/AllNLPData.csv",
+        "question_mode": "non cognitive",
+        "max_windows_per_question": 23,
+        "channels": [
+            "TP9",
+            "AF7",
+            "AF8",
+            "TP10"
+        ]
+    },
+    "preprocessor_params": {
+        "name": "tfrecord_preprocessor",
+        "test_split": 0.0,
+        "val_split": 0.0,
+        "batch_size": 1,
+        "cv_folds": 5,
+        "fold_manifest_csv": "data/belonging/andrews_40_subjects/final_results_paper_cv_manifest.csv",
+        "cv_fold_as_test": true,
+        "downsample_train": false,
+        "max_windows_per_person": null,
+        "seed": 42
+    },
+    "model_params": {
+        "name": "ChronoNet",
+        "conv_filters": 8,
+        "conv_kernel_sizes": [
+            2,
+            4,
+            8
+        ],
+        "conv_stride": 2,
+        "num_blocks": 2,
+        "gru_hidden_size": 16,
+        "dropout_rate": 0.3,
+        "use_batch_norm": true,
+        "window_batch_size": 8,
+        "truncate_bptt": 64
+    },
+    "trainer_params": {
+        "name": "BelongingMultimodalTrainer",
+        "num_epochs": 20,
+        "learning_rate": 0.0003,
+        "weight_decay": 0.0001,
+        "patience": 5,
+        "decision_threshold": 0.5,
+        "threshold_strategy": null,
+        "use_validation_during_training": false,
+        "fusion_mode": "fixed_weight",
+        "survey_weight": 0.55,
+        "fusion_threshold": 0.5,
+        "gated_confidence_margin": 0.0,
+        "survey_seed": 42
+    }
+}
+
+
+Tracked Metrics:
+train_loss: [np.float64(0.7484205169603229), np.float64(0.7043488286435604), np.float64(0.7089335471391678), np.float64(0.7174168936908245), np.float64(0.6932252440601587), np.float64(0.6801604088395834), np.float64(0.6974801020696759), np.float64(0.6577499266713858), np.float64(0.674937417730689), np.float64(0.6543877264484763), np.float64(0.5858966540545225), np.float64(0.6514182956889272), np.float64(0.5505978260189295), np.float64(0.5872368738055229), np.float64(0.5578692783601582), np.float64(0.515437203925103), np.float64(0.5284557095728815), np.float64(0.5074527349788696), np.float64(0.46139140892773867), np.float64(0.417449297150597)]
+train_accuracy: [0.5, 0.5, 0.53125, 0.40625, 0.59375, 0.625, 0.5625, 0.65625, 0.59375, 0.625, 0.78125, 0.53125, 0.84375, 0.71875, 0.78125, 0.75, 0.78125, 0.71875, 0.8125, 0.78125]
+train_precision: [0.5, 0.5, 0.5263157894736842, 0.4444444444444444, 0.5714285714285714, 0.6428571428571429, 0.5416666666666666, 0.6, 0.5652173913043478, 0.6111111111111112, 0.8, 0.5333333333333333, 0.8666666666666667, 0.6842105263157895, 0.7647058823529411, 0.7222222222222222, 0.8461538461538461, 0.6842105263157895, 0.9166666666666666, 0.7142857142857143]
+train_recall: [1.0, 0.8125, 0.625, 0.75, 0.75, 0.5625, 0.8125, 0.9375, 0.8125, 0.6875, 0.75, 0.5, 0.8125, 0.8125, 0.8125, 0.8125, 0.6875, 0.8125, 0.6875, 0.9375]
+train_f1: [0.6666666666666666, 0.6190476190476191, 0.5714285714285714, 0.5581395348837209, 0.6486486486486487, 0.6, 0.65, 0.7317073170731707, 0.6666666666666666, 0.6470588235294118, 0.7741935483870968, 0.5161290322580645, 0.8387096774193549, 0.7428571428571429, 0.7878787878787878, 0.7647058823529411, 0.7586206896551724, 0.7428571428571429, 0.7857142857142857, 0.8108108108108109]
+
+Saved on: 2026-07-04 11:47:52
