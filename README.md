@@ -65,7 +65,7 @@ Four binary label strategies were evaluated:
 - **Factor:** One-factor analysis of the same five features used for the Composite label. Factor scores greater than or equal to zero were labeled as belonging.
 - **Weighted:** Weighted combination of `membership` (Q1--Q3), `conf_prog` (Q22), `anticipated_perf` (Q24), `self_efficacy` (Q25), `tool_comfort` (Q27), and `preparedness` (Q30). Feature weights were based on the absolute mean difference between the Specific-label classes, and scores were split at the median.
 
-Features used to construct each label were excluded from that label's survey-model inputs to reduce label leakage.
+Features used to construct each label were excluded from that label's survey-model inputs to reduce label leakage. Question numbers are consistent with [this file](https://github.com/hanmosh/eeg-pipeline/blob/main/data/belonging/andrews_40_subjects/SURVEY_QUESTIONS.md).
 
 ## Building out the Pipeline
 The pipeline is designed to be modular, and it is up to you to implement the specific components. You will need to create your own data loaders, preprocessors, models, and trainers. The pipeline expects these components to adhere to specific interfaces, which you can find in the example implementations provided. Explanations of these components are as follows:
