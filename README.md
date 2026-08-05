@@ -54,6 +54,19 @@ These suites utilize a labeling method that was derived from the student respons
 
 Names must match the maps in `utils/pipeline_setup.py`.
 
+### Experiment Information
+
+The models were trained using EEG and survey data collected while participants completed a computing-belonging questionnaire. The survey implementation is available in the [RscaSurvey repository](https://github.com/meoragiusiano/RscaSurvey), and the processed features and labels are available in [`AllNLPData.csv`](https://github.com/hanmosh/eeg-pipeline/blob/main/data/belonging/andrews_40_subjects/AllNLPData.csv).
+
+Four binary label strategies were evaluated:
+
+- **Specific:** Based on the original Q1 membership item. Responses 5--7 were labeled as belonging, while responses 1--4 were labeled as not belonging.
+- **Composite:** Mean of `membership` (Q1--Q3), `accept_pos` (Q4--Q7), reverse-coded `accept_neg_rev` (Q8--Q11), `emotion` (Q12--Q16), and `trust_instr` (Q17--Q22). Scores were split at the median.
+- **Factor:** One-factor analysis of the same five features used for the Composite label. Factor scores greater than or equal to zero were labeled as belonging.
+- **Weighted:** Weighted combination of `membership` (Q1--Q3), `conf_prog` (Q22), `anticipated_perf` (Q24), `self_efficacy` (Q25), `tool_comfort` (Q27), and `preparedness` (Q30). Feature weights were based on the absolute mean difference between the Specific-label classes, and scores were split at the median.
+
+Features used to construct each label were excluded from that label's survey-model inputs to reduce label leakage.
+
 ## Building out the Pipeline
 The pipeline is designed to be modular, and it is up to you to implement the specific components. You will need to create your own data loaders, preprocessors, models, and trainers. The pipeline expects these components to adhere to specific interfaces, which you can find in the example implementations provided. Explanations of these components are as follows:
 
